@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # MinIO: 로컬 S3 저장소 (영화/책 포스터 이미지)
+  minio:
+    image: quay.io/minio/minio
+    container_name: minio_server
+    ports:
+      - "9000:9000" # 애플리케이션(서버)에서 S3 API로 통신할 때 쓰는 포트
+      - "9001:9001" # 브라우저로 접속해서 눈으로 확인하는 웹 UI(Console) 포트
+    environment:
+      MINIO_ROOT_USER: minioadmin      # AWS S3의 Access Key 역할 (수정 가능)
+      MINIO_ROOT_PASSWORD: minioadmin123 # AWS S3의 Secret Key 역할 (수정 가능, 8자 이상)
+#    volumes:
+#      - ./minio_data:/data            # 중요: 컨테이너가 꺼져도 이미지가 날아가지 않도록 로컬 폴더와 연결
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+  # Qdrant: AI 벡터 검색용 (취향 분석 & 유사도 추천)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant_server
+    ports:
+      - "6333:6333"  # REST API 통신 및 웹 대시보드(UI) 접속용 포트
+      - "6334:6334"  # gRPC 통신용 포트 (대용량 데이터를 더 빠르게 처리할 때 사용)
+#    volumes:
+#      - ./qdrant_data:/qdrant/storage  # 데이터 영구 저장을 위한 로컬 폴더 연결
+    restart: unless-stopped
+
+  # PostgreSQL: 관계형 데이터의 심장 (Main DB + Log)
+  postgres:
+    build: ./postgres                 # 중요: 바로 위의 Dockerfile을 읽어서 빌드하라는 명령어입니다.
+    # image: postgres:15     # 만약 Dockerfile을 안 쓴다면 이 줄의 주석을 풀고 build: . 을 지우면 됩니다.
+    container_name: postgres_server
+    ports:
+      - "5432:5432"          # 로컬 5432 포트와 컨테이너 5432 포트 연결
+    environment:
+      POSTGRES_USER: admin                    # DB 접속 아이디
+      POSTGRES_PASSWORD: adminpassword123     # DB 접속 비밀번호
+      POSTGRES_DB: crates       # 처음 실행 시 자동으로 만들어질 데이터베이스 이름
+#    volumes:
+#      - ./postgres_data:/var/lib/postgresql/data # 데이터 영구 보존을 위한 바인드 마운트
+    restart: unless-stopped
+
+  # Elasticsearch: 전문 텍스트 검색 (Nori 분석기 포함)
+#  elasticsearch:
+#    build: ./elasticsearch      # dockerFile 경로
+#    container_name: elasticsearch
+#    environment:
+#      - node.name=elasticsearch
+#      - discovery.type=single-node
+#      - xpack.security.enabled=false  # 로컬 개발 편의를 위해 보안 해제 (실운영시 true 필수)
+#      - "ES_JAVA_OPTS=-Xms512m -Xmx512m" # 메모리 제한 (안 걸면 RAM을 다 먹어버림), 로컬 메모리 최적화
+#    ports:
+#      - 9200:9200
+#    volumes:
+#      - es_data:/usr/share/elasticsearch/data
+#    restart: unless-stopped
+
+  # Kibana: Elasticsearch 데이터 시각화 도구
+#  kibana:
+#    image: docker.elastic.co/kibana/kibana:8.11.1
+#    container_name: kibana
+#    environment:
+#      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+#    ports:
+#      - 5601:5601
+#    depends_on:
+#      - elasticsearch
+#    restart: unless-stopped
+
+  # Redis: 추천 목록 캐싱 및 데이터 수화 (Hydration) 용
+#  redis:
+#    image: redis:latest
+#    container_name: redis_server
+#    ports:
+#      - "6379:6379"
+#    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  minio_data:
+#  es_data:

@@ -1,0 +1,76 @@
+spring:
+  # ✅ 1. PostgreSQL 연결 설정
+  datasource:
+    url: jdbc:postgresql://localhost:5432/crates
+    username: admin
+    password: adminpassword123
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update # 로컬 개발 시 엔티티 변경에 맞춰 테이블 자동 업데이트
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    show-sql: true  # 콘솔에 쿼리 출력 여부
+
+# reids, elasticSearch 아직 docker에 없어서 발생하는 에러 생략
+management:
+  health:
+    redis:
+      enabled: false
+    elasticsearch:
+      enabled: false
+
+  # ✅ 2. Redis (추천 보드 캐싱용)
+#  data:
+#    redis:
+#      host: localhost
+#      port: 6379
+      # lettuce 파이프라이닝 및 타임아웃 세부 설정 (필요시 확장)
+
+# ✅ 4. Qdrant 연결 설정 (커스텀 설정)
+ai:
+  vectorstore:
+    qdrant:
+      host: localhost
+      port: 6333  # 주의: Spring AI Qdrant 클라이언트는 보통 gRPC(6334) 포트를 사용. (REST는 6333 <- postman사용할 때) // 시연에는 gRPC(6334포트)로 해야함
+      api-key: "" # 로컬 도커는 인증이 없으므로 빈 문자열
+      collection-name: content_vector # 기본 저장소 이름
+
+# ---------------------------------
+# ✅ S3 ( minIo )
+# application-local.yml (로컬 MinIO)
+# ---------------------------------
+storage:
+  endpoint: http://localhost:9000   # MinIO 서버의 대문 주소
+  bucket-name: content-bucket   # 서버 안에 만든 특정 저장 공간 이름
+  bucket-url: http://localhost:9000/content-bucket    # 이미지들에 접근하기 위한 기본 경로
+  access-key: minioadmin
+  secret-key: minioadmin123
+
+# ---------------------------------
+# application-prod.yml (운영 S3)
+# ---------------------------------
+#storage:
+#  bucket-name: content-bucket
+#  bucket-url: https://content-bucket.s3.ap-northeast-2.amazonaws.com
+#  access-key: ${AWS_ACCESS_KEY}
+#  secret-key: ${AWS_SECRET_KEY}
+
+
+# ---------------------------------
+  # ✅ 5. Elasticsearch (전문 검색 엔진)
+# ---------------------------------
+#  elasticsearch:
+#    uris: http://localhost:9200
+    # xpack 보안을 false로 했으므로 username/password 생략
+
+# ---------------------------------
+# 로깅 수준 설정
+# ---------------------------------
+logging:
+  level:
+    org.springframework.web: INFO
+    org.hibernate.SQL: DEBUG         # 쿼리 로그 보기
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE # 쿼리에 들어가는 파라미터 값(?) 보기
