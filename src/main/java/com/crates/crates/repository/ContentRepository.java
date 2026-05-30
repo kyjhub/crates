@@ -1,7 +1,7 @@
 package com.crates.crates.repository;
 
 import com.crates.crates.DTO.ContentQueryDto;
-import com.crates.crates.entity.Contents.Content;
+import com.crates.crates.entity.contents.Content;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;

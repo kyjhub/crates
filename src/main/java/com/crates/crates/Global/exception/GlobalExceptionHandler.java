@@ -1,4 +1,4 @@
-package com.crates.crates.Global;
+package com.crates.crates.Global.exception;
 
 import com.crates.crates.DTO.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;

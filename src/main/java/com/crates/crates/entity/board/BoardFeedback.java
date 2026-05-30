@@ -1,6 +1,6 @@
-package com.crates.crates.entity.Board;
+package com.crates.crates.entity.board;
 
-import com.crates.crates.entity.User;
+import com.crates.crates.entity.user.User;
 import com.crates.crates.enumData.Rating;
 import jakarta.persistence.*;
 import lombok.*;

@@ -1,4 +1,4 @@
-package com.crates.crates.entity.Contents;
+package com.crates.crates.entity.contents;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.DiscriminatorValue;

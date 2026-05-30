@@ -1,6 +1,6 @@
-package com.crates.crates.entity.Board;
+package com.crates.crates.entity.board;
 
-import com.crates.crates.entity.Contents.Content;
+import com.crates.crates.entity.contents.Content;
 import jakarta.persistence.*;
 import lombok.*;
 

@@ -1,8 +1,6 @@
 package com.crates.crates.DTO;
 
 
-import com.crates.crates.entity.Contents.Content;
-import lombok.AllArgsConstructor;
 import lombok.Data;
 
 import java.util.List;

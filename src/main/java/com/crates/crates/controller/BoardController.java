@@ -3,7 +3,6 @@ package com.crates.crates.controller;
 
 import com.crates.crates.DTO.ApiResponse;
 import com.crates.crates.DTO.ContentResponseDto;
-import com.crates.crates.Global.BusinessException;
 import com.crates.crates.service.ContentService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,7 +17,7 @@ import java.util.List;
 
 @Slf4j
 @RestController
-@RequestMapping("/curation/boards")
+@RequestMapping("/api/board")
 @RequiredArgsConstructor
 public class BoardController {
 

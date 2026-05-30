@@ -2,20 +2,17 @@ package com.crates.crates.service;
 
 import com.crates.crates.DTO.ContentQueryDto;
 import com.crates.crates.DTO.ContentResponseDto;
-import com.crates.crates.Global.BusinessException;
-import com.crates.crates.entity.Contents.Content;
+import com.crates.crates.Global.exception.BusinessException;
+import com.crates.crates.entity.contents.Content;
 import com.crates.crates.repository.BoardItemRepository;
 import com.crates.crates.repository.BoardRepository;
 import com.crates.crates.repository.ContentRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor

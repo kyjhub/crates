@@ -1,4 +1,4 @@
-package com.crates.crates.entity.Board;
+package com.crates.crates.entity.board;
 
 import jakarta.persistence.*;
 import lombok.AccessLevel;

@@ -1,0 +1,145 @@
+package com.crates.crates.service;
+
+import com.crates.crates.DTO.LoginRequestDto;
+import com.crates.crates.DTO.ProfileRequestDto;
+import com.crates.crates.DTO.SignupRequestDto;
+import com.crates.crates.DTO.TokenResponseDto;
+import com.crates.crates.Global.exception.BusinessException;
+import com.crates.crates.entity.UserRefreshToken;
+import com.crates.crates.entity.user.User;
+import com.crates.crates.enumData.LoginType;
+import com.crates.crates.enumData.ROLE;
+import com.crates.crates.jwt.JwtTokenProvider;
+import com.crates.crates.repository.UserRefreshTokenRepository;
+import com.crates.crates.repository.UserRepository;
+import com.crates.crates.user.CustomUserDetails;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@RequiredArgsConstructor
+@Transactional(readOnly = true)
+public class AuthService {
+
+    private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final AuthenticationManager authenticationManager;
+
+     private final JwtTokenProvider jwtTokenProvider;
+    private final RefreshTokenService refreshTokenService;
+    private final UserRefreshTokenRepository userRefreshTokenRepository;
+
+    @Transactional
+    public TokenResponseDto signup(SignupRequestDto request)
+    {
+        // 1. 중복 검사
+        if (userRepository.existsByLoginId(request.getLoginId()))
+        {
+            throw new BusinessException("이미 사용중인 아이디입니다.");
+        }
+        if (userRepository.existsByEmail(request.getEmail()))
+        {
+            throw new BusinessException("이미 사용중인 이메일입니다.");
+        }
+        if (userRepository.existsByNickname(request.getNickname()))
+        {
+            throw new BusinessException("이미 사용중인 닉네임입니다.");
+        }
+
+        // 2. 비밀번호 암호화 및 유저 저장
+        User user = User.builder()
+                .loginId(request.getLoginId())
+                .pwd(passwordEncoder.encode(request.getPwd()))
+                .email(request.getEmail())
+                .nickname(request.getNickname())
+                .gender(request.getGender())
+                .birthYear(request.getBirthYear())
+                .role(ROLE.USER)
+                .loginType(LoginType.LOCAL)
+                .provider(null)
+                .providerId(null)
+                .build();
+
+        User savedUser = userRepository.save(user);
+        String accessToken = jwtTokenProvider.createToken(savedUser.getId()); // JWT 연결 시
+        String refreshToken = refreshTokenService.issue(savedUser.getId());
+
+
+        // 3. 회원가입 완료 후 즉시 로그인을 위한 JWT 발급
+        return new TokenResponseDto(accessToken, refreshToken); // 실제 JWT 발급 로직 적용
+    }
+
+    public TokenResponseDto login(LoginRequestDto request)
+    {
+        // 1. AuthenticationManager 위임
+        // CustomUserDetailsService가 동작하여 유저 유무, LoginType.OAUTH 여부, 비밀번호 검증을 모두 수행합니다.
+        Authentication authentication = authenticationManager.authenticate(
+                new UsernamePasswordAuthenticationToken(
+                        request.getLoginId(),
+                        request.getPwd()
+                )
+        );
+
+        // 2. 검증 통과 후 JWT 발급
+        CustomUserDetails userDetails = (CustomUserDetails) authentication.getPrincipal();
+
+        Long userId = userDetails.getUserId();
+
+        String accessToken = jwtTokenProvider.createToken(userId);
+        String refreshToken = refreshTokenService.issue(userId);
+
+        return new TokenResponseDto(accessToken, refreshToken);     // 실제 JWT 발급 로직 적용
+    }
+
+    // Refresh Token 갱신
+    @Transactional
+    public TokenResponseDto refresh(String oldRefreshToken) {
+
+        // 1. Refresh Token 로테이션 및 유저 ID 획득 로직
+        RefreshTokenService.RotateResult result = refreshTokenService.rotate(oldRefreshToken);
+
+        // String newAccessToken = jwtProvider.generateAccessToken(userId, "USER");
+        String newAccessToken = jwtTokenProvider.createToken(result.userId());
+
+        return new TokenResponseDto(newAccessToken, result.newTokenValue());
+    }
+
+    @Transactional
+    public void completeProfile(Long userId, ProfileRequestDto request) {
+        // 1. 유저 조회
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new BusinessException("유저를 찾을 수 없습니다."));
+
+        // 2. 이미 프로필이 완성된 유저인지 검증 (이메일, 닉네임 존재 여부)
+        if (user.getEmail() != null || user.getNickname() != null) {
+            throw new BusinessException("이미 프로필이 완성된 유저입니다.");
+        }
+
+        // 3. 입력된 정보에 대한 중복 검사
+        if (userRepository.existsByEmail(request.getEmail())) {
+            throw new BusinessException("이미 사용중인 이메일입니다.");
+        }
+        if (userRepository.existsByNickname(request.getNickname())) {
+            throw new BusinessException("이미 사용중인 닉네임입니다.");
+        }
+
+        // 4. 유저 정보 업데이트
+        user.updateProfile(
+                request.getEmail(),
+                request.getNickname(),
+                request.getGender(),
+                request.getBirthYear()
+        );
+    }
+
+    // 단일 기기 로그아웃
+    @Transactional
+    public void logout(String refreshToken) {
+        refreshTokenService.deleteByToken(refreshToken);
+    }
+}

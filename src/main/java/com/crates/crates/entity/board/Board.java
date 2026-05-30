@@ -1,7 +1,7 @@
-package com.crates.crates.entity.Board;
+package com.crates.crates.entity.board;
 
-import com.crates.crates.entity.Contents.Content;
-import com.crates.crates.entity.User;
+import com.crates.crates.entity.contents.Content;
+import com.crates.crates.entity.user.User;
 import com.crates.crates.enumData.BoardType;
 import jakarta.persistence.*;
 import lombok.*;
