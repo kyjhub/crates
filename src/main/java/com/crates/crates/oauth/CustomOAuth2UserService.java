@@ -3,7 +3,7 @@ package com.crates.crates.oauth;
 import com.crates.crates.entity.user.User;
 import com.crates.crates.enumData.AuthProvider;
 import com.crates.crates.enumData.LoginType;
-import com.crates.crates.enumData.ROLE;
+import com.crates.crates.enumData.Role;
 import com.crates.crates.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,7 +17,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
-import java.util.UUID;
 
 @Slf4j
 @Service
@@ -89,7 +88,7 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
                 .provider(provider)
                 .providerId(oauth2UserInfo.getProviderId())
                 .loginType(LoginType.OAUTH) // 💡 LoginType.OAUTH 설정!
-                .role(ROLE.USER)
+                .role(Role.USER)
                 .build();
 
         log.info("신규 소셜 계정 가입 완료. 가입 경로: {}", user.getProvider());

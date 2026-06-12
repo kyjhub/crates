@@ -3,7 +3,7 @@ package com.crates.crates.entity.user;
 import com.crates.crates.entity.board.BoardFeedback;
 import com.crates.crates.enumData.Gender;
 import com.crates.crates.enumData.LoginType;
-import com.crates.crates.enumData.ROLE;
+import com.crates.crates.enumData.Role;
 import com.crates.crates.enumData.AuthProvider;
 import jakarta.persistence.*;
 import lombok.*;
@@ -39,7 +39,7 @@ public class User {
     private String pwd;
 
     @Enumerated(EnumType.STRING)
-    private ROLE role;
+    private Role role;
 
     @Enumerated(EnumType.STRING)
     private Gender gender;

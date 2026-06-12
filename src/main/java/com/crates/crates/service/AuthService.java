@@ -5,12 +5,10 @@ import com.crates.crates.DTO.ProfileRequestDto;
 import com.crates.crates.DTO.SignupRequestDto;
 import com.crates.crates.DTO.TokenResponseDto;
 import com.crates.crates.Global.exception.BusinessException;
-import com.crates.crates.entity.UserRefreshToken;
 import com.crates.crates.entity.user.User;
 import com.crates.crates.enumData.LoginType;
-import com.crates.crates.enumData.ROLE;
+import com.crates.crates.enumData.Role;
 import com.crates.crates.jwt.JwtTokenProvider;
-import com.crates.crates.repository.UserRefreshTokenRepository;
 import com.crates.crates.repository.UserRepository;
 import com.crates.crates.user.CustomUserDetails;
 import lombok.RequiredArgsConstructor;
@@ -59,7 +57,7 @@ public class AuthService {
                 .nickname(request.getNickname())
                 .gender(request.getGender())
                 .birthDate(request.getBirthYear())
-                .role(ROLE.USER)
+                .role(Role.USER)
                 .loginType(LoginType.LOCAL)
                 .provider(null)
                 .providerId(null)

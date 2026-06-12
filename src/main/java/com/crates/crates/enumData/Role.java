@@ -1,5 +1,5 @@
 package com.crates.crates.enumData;
 
-public enum ROLE {
+public enum Role {
     USER, ADMIN, ANONYMOUS, MANAGER;
 }
