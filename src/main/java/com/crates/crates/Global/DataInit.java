@@ -1,7 +1,7 @@
 package com.crates.crates.Global;
 
-import com.crates.crates.entity.Board.Board;
-import com.crates.crates.entity.Contents.Movie;
+import com.crates.crates.entity.board.Board;
+import com.crates.crates.entity.contents.Movie;
 import com.crates.crates.enumData.BoardType;
 import com.crates.crates.repository.BoardRepository;
 import com.crates.crates.repository.ContentRepository;

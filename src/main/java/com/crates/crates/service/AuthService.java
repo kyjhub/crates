@@ -32,7 +32,7 @@ public class AuthService {
 
      private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenService refreshTokenService;
-    private final UserRefreshTokenRepository userRefreshTokenRepository;
+    private final OAuthTempTokenService oAuthTempTokenService;
 
     @Transactional
     public TokenResponseDto signup(SignupRequestDto request)
@@ -58,7 +58,7 @@ public class AuthService {
                 .email(request.getEmail())
                 .nickname(request.getNickname())
                 .gender(request.getGender())
-                .birthYear(request.getBirthYear())
+                .birthDate(request.getBirthYear())
                 .role(ROLE.USER)
                 .loginType(LoginType.LOCAL)
                 .provider(null)
@@ -141,5 +141,13 @@ public class AuthService {
     @Transactional
     public void logout(String refreshToken) {
         refreshTokenService.deleteByToken(refreshToken);
+    }
+
+    @Transactional
+    public TokenResponseDto exchangeOAuthToken(String tempToken) {
+        Long userId = oAuthTempTokenService.consume(tempToken);
+        String accessToken = jwtTokenProvider.createToken(userId);
+        String refreshToken = refreshTokenService.issue(userId);
+        return new TokenResponseDto(accessToken, refreshToken);
     }
 }

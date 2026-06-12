@@ -44,7 +44,7 @@ public class User {
     @Enumerated(EnumType.STRING)
     private Gender gender;
 
-    private LocalDate birthYear;
+    private LocalDate birthDate;
 
     private String nickname;        // 중복 불가, 사용자가 직접 설정
 
@@ -69,6 +69,6 @@ public class User {
         this.email = email;
         this.nickname = nickname;
         this.gender = gender;
-        this.birthYear = birthYear;
+        this.birthDate = birthYear;
     }
 }

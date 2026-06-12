@@ -31,6 +31,7 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-webclient'
 	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
 	implementation 'org.springframework.boot:spring-boot-starter-security'
+	implementation 'org.springframework.boot:spring-boot-starter-oauth2-client'	// OAuth2 클라이언트 기능을 위한 핵심 라이브러리 추가
 	implementation 'org.springframework.ai:spring-ai-starter-vector-store-qdrant'
 	compileOnly 'org.projectlombok:lombok'
 	developmentOnly 'org.springframework.boot:spring-boot-devtools'
@@ -45,6 +46,11 @@ dependencies {
 
 	// S3Client 클래스 import
 	implementation 'software.amazon.awssdk:s3:2.25.11' // SDK v2
+
+	// JWT
+	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
+	runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
+	runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
 }
 
 dependencyManagement {

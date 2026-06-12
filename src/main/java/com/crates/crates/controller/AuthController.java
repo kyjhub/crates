@@ -4,6 +4,10 @@ import com.crates.crates.DTO.*;
 import com.crates.crates.service.AuthService;
 import com.crates.crates.user.CustomUserDetails;
 import jakarta.validation.Valid;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseCookie;
+import java.time.Duration;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -57,6 +61,27 @@ public class AuthController {
         TokenResponseDto response = authService.refresh(refreshToken);
         return ResponseEntity.status(HttpStatus.OK)
                 .body(new ApiResponse<TokenResponseDto>(true, response, "token 갱신 성공!"));
+    }
+
+    @PostMapping("/oauth-token")
+    public ResponseEntity<ApiResponse<AccessTokenResponseDto>> exchangeOAuthToken(
+            @RequestBody OAuthTokenRequestDto request,
+            HttpServletResponse response) {
+        
+        TokenResponseDto tokenResponse = authService.exchangeOAuthToken(request.tempToken());
+        
+        ResponseCookie cookie = ResponseCookie.from("refreshToken", tokenResponse.getRefreshToken())
+                .httpOnly(true)
+                .secure(true)
+                .path("/api/auth")
+                .maxAge(Duration.ofDays(14))
+                .sameSite("Strict")
+                .build();
+        
+        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+        
+        return ResponseEntity.status(HttpStatus.OK)
+                .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.getAccessToken()), "OAuth 토큰 교환 성공!"));
     }
 
     @PostMapping("/logout")

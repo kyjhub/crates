@@ -1,8 +1,6 @@
 package com.crates.crates.oauth;
 
-import com.crates.crates.jwt.JwtTokenProvider;
-import com.crates.crates.service.RefreshTokenService;
-import jakarta.servlet.http.Cookie;
+import com.crates.crates.service.OAuthTempTokenService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -21,8 +19,7 @@ import java.io.IOException;
 public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationSuccessHandler
 {
 
-    private final RefreshTokenService refreshTokenService;
-    private final JwtTokenProvider jwtTokenProvider;
+    private final OAuthTempTokenService oAuthTempTokenService;
 
     @Value("${app.oauth2.redirect-uri}")
     private String redirectUri;
@@ -37,24 +34,15 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
         CustomOAuth2User oauth2User = (CustomOAuth2User) authentication.getPrincipal();
         Long userId = oauth2User.getUserId();
 
-        // PK는 항상 존재하므로 신규/기존 구분 없이 JWT 발급
-        String accessToken = jwtTokenProvider.createToken(userId);
-        String refreshToken = refreshTokenService.issue(userId);
+        // 임시 토큰 발급 및 Redis 저장
+        String tempToken = oAuthTempTokenService.issue(userId);
 
-        // 3. Refresh Token을 HttpOnly 쿠키에 담기
-        Cookie refreshTokenCookie = new Cookie("refreshToken", refreshToken);
-        refreshTokenCookie.setHttpOnly(true);      // 자바스크립트에서 접근 불가 (XSS 방어)
-        refreshTokenCookie.setSecure(true);        // HTTPS 통신에서만 전송 (로컬 테스트 시에는 false로 하거나, HTTPS 설정 필요)
-        refreshTokenCookie.setPath("/");           // 모든 경로에서 쿠키 전송
-        refreshTokenCookie.setMaxAge(14 * 24 * 60 * 60); // 14일 (초 단위)
-
-        response.addCookie(refreshTokenCookie);
-
-        // 프론트가 nickname == null 여부로 프로필 완성 여부를 판단하여 라우팅
+        // 프론트엔드로 리다이렉트 (임시 토큰 포함)
         String targetUrl = UriComponentsBuilder.fromUriString(redirectUri)
+                .queryParam("tempToken", tempToken)
                 .build().toUriString();
 
-        log.info("소셜 로그인 완료. JWT 발급. userId: {}", oauth2User.getUserId());
+        log.info("소셜 로그인 완료. 임시 토큰 발급. userId: {}", userId);
         getRedirectStrategy().sendRedirect(request, response, targetUrl);
     }
 }
