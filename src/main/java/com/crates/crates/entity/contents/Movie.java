@@ -12,13 +12,15 @@ import org.hibernate.type.SqlTypes;
 import java.util.List;
 
 @Entity
-@DiscriminatorValue("MOVIE")        // content의 자식 엔티티
+@DiscriminatorValue(Movie.DTYPE)        // content의 자식 엔티티
 @PrimaryKeyJoinColumn(name = "content_id")
 @Getter
 @NoArgsConstructor
 @AllArgsConstructor
 @SuperBuilder(toBuilder = true)
 public class Movie extends Content {
+
+    public static final String DTYPE = "MOVIE";
 
     private Integer runningTime;
 

@@ -8,13 +8,15 @@ import lombok.*;
 import lombok.experimental.SuperBuilder;
 
 @Entity
-@DiscriminatorValue("BOOK")
+@DiscriminatorValue(Book.DTYPE)
 @PrimaryKeyJoinColumn(name = "content_id")
 @Getter
 @NoArgsConstructor
 @AllArgsConstructor
 @SuperBuilder(toBuilder = true)
 public class Book extends Content {
+
+    public static final String DTYPE = "BOOK";
 
     private String author;
     private String publisher;

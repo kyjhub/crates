@@ -1,21 +1,24 @@
 package com.crates.crates.service;
 
+import com.crates.crates.DTO.ContentDetailResponse;
 import com.crates.crates.DTO.ContentQueryDto;
 import com.crates.crates.DTO.ContentResponseDto;
 import com.crates.crates.Global.exception.BusinessException;
-import com.crates.crates.entity.contents.Content;
 import com.crates.crates.repository.BoardItemRepository;
 import com.crates.crates.repository.BoardRepository;
 import com.crates.crates.repository.ContentRepository;
-import lombok.RequiredArgsConstructor;
+import com.crates.crates.service.strategy.ContentDetailStrategy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class ContentService {
 
@@ -23,24 +26,44 @@ public class ContentService {
     private final BoardRepository boardRepository;
     private final BoardItemRepository boardItemRepository;
     private final ImageService imageService;
+    private final Map<String, ContentDetailStrategy> strategyMap;
 
-    // 컨텐츠 단건 조회
-    public ContentResponseDto getContent(Long contentId) {
-        Content content = contentRepository.findById(contentId)
+    public ContentService(ContentRepository contentRepository,
+                          BoardRepository boardRepository,
+                          BoardItemRepository boardItemRepository,
+                          ImageService imageService,
+                          List<ContentDetailStrategy> strategies)
+    {
+        this.contentRepository = contentRepository;
+        this.boardRepository = boardRepository;
+        this.boardItemRepository = boardItemRepository;
+        this.imageService = imageService;
+        this.strategyMap = strategies.stream()
+                .collect(Collectors.toMap(ContentDetailStrategy::getSupportedType, Function.identity()));
+    }
+
+    public ContentResponseDto getContentSummary(Long contentId)
+    {
+        ContentQueryDto dto = contentRepository.findContentSummaryById(contentId)
                 .orElseThrow(() -> new BusinessException("콘텐츠를 찾을 수 없습니다. contentId: " + contentId));
 
-        // 이미 프론트에서 board를 받으면서 이미지를 갖고있을텐데 내가 또 넘겨줄 이유가 있을까? <- 컨텐츠 검색에서 필요할듯
-        String imageUrl = imageService.getImageUrl(content.getS3ObjectKey(), content.getImageExtension());
+        String imageUrl = imageService.getImageUrl(dto.getS3ObjectKey(), dto.getImageExtension());
 
-        // 자식클래스의 정보까지 담아서 반환해야됨-> DTO새로 만들어서 ㄱㄱ
-//        return ContentResponseDto.builder()
-//                .id(content.getId())
-//                .title(content.getTitle())
-//                .imageUrl(imageUrl)
-//                .contentType(content.getDtype())
-//                .releaseDate(content.getReleaseDate())
-//                .build();
-        return null;
+        return ContentResponseDto.builder()
+                .id(dto.getId())
+                .title(dto.getTitle())
+                .imageUrl(imageUrl)
+                .contentType(dto.getContentType())
+                .releaseDate(dto.getReleaseDate())
+                .genre(dto.getGenre())
+                .build();
+    }
+
+    public ContentDetailResponse getContentDetail(String dtype, Long contentId)
+    {
+        return Optional.ofNullable(strategyMap.get(dtype.toUpperCase()))
+                .orElseThrow(() -> new BusinessException("지원하지 않는 콘텐츠입니다: " + dtype))
+                .getDetail(contentId);
     }
 
     // 보드의 컨텐츠 목록 조회
@@ -68,6 +91,7 @@ public class ContentService {
                             .imageUrl(imageUrl)
                             .contentType(dto.getContentType())
                             .releaseDate(dto.getReleaseDate())
+                            .genre(dto.getGenre())
                             .build();
                 }
         ).toList();

@@ -1,4 +1,19 @@
 package com.crates.crates.DTO;
 
-public class MovieResponseDTO {
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.List;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class MovieResponseDTO implements ContentDetailResponse {
+    private Integer runningTime;
+    private List<String> director;
+    private List<String> actor;
+    private String plot;
 }

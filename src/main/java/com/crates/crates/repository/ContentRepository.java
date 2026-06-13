@@ -8,13 +8,18 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface ContentRepository extends JpaRepository<Content, Long> {
 
-    // Content+하위컨텐츠 필드에서 Content 필드만 조회
     @Query("SELECT new com.crates.crates.DTO.ContentQueryDto(" +
-            "c.id, c.title, c.s3ObjectKey, c.imageExtension, c.dtype, c.releaseDate) " +
+            "c.id, c.title, c.s3ObjectKey, c.imageExtension, c.dtype, c.releaseDate, c.genre) " +
             "FROM Content c WHERE c.id IN :ids")
     List<ContentQueryDto> findContentsByIds(@Param("ids") List<Long> ids);
+
+    @Query("SELECT new com.crates.crates.DTO.ContentQueryDto(" +
+            "c.id, c.title, c.s3ObjectKey, c.imageExtension, c.dtype, c.releaseDate, c.genre) " +
+            "FROM Content c WHERE c.id = :id")
+    Optional<ContentQueryDto> findContentSummaryById(@Param("id") Long id);
 }
