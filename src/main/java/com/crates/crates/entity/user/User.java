@@ -1,7 +1,9 @@
 package com.crates.crates.entity.user;
 
-import com.crates.crates.entity.board.BoardFeedback;
 import com.crates.crates.enumData.Gender;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 import com.crates.crates.enumData.LoginType;
 import com.crates.crates.enumData.Role;
 import com.crates.crates.enumData.AuthProvider;
@@ -9,10 +11,10 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.List;
+import java.time.LocalDateTime;
 
 @Entity
+@EntityListeners(AuditingEntityListener.class)
 @Table(name = "users",
         uniqueConstraints = {
             @UniqueConstraint(
@@ -58,11 +60,13 @@ public class User {
 
     private String providerId; // 구글 등 소셜 플랫폼에서 넘겨준 해당 유저의 고유 식별 ID (예: "sub" 값)
 
-    // 양방향 매핑 ( User -> boardFeedback)
-    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
-    @ToString.Exclude
-    @Builder.Default
-    private List<BoardFeedback> boardFeedbacks = new ArrayList<>();
+    @CreatedDate
+    private LocalDateTime createdAt;
+
+    @LastModifiedDate
+    private LocalDateTime updatedAt;
+
+    private LocalDateTime deletedAt;
 
     // 회원가입시 OAuth 인증 후 필요
     public void updateProfile(String email, String nickname, Gender gender, LocalDate birthYear) {

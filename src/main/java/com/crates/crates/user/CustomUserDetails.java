@@ -39,7 +39,7 @@ public class CustomUserDetails implements UserDetails {
     @Override public boolean isAccountNonExpired() { return true; }
     @Override public boolean isAccountNonLocked() { return true; }
     @Override public boolean isCredentialsNonExpired() { return true; }
-    @Override public boolean isEnabled() { return true; }
+    @Override public boolean isEnabled() { return user.getDeletedAt() == null; }
 
     // 비즈니스 편의를 위한 식별 ID 반환 메서드
     public Long getUserId() {
