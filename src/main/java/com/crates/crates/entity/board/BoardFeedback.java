@@ -24,7 +24,7 @@ public class BoardFeedback {
     private Board board;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id")
+    @JoinColumn(name = "user_id", nullable = true, foreignKey = @ForeignKey(name = "fk_feedback_user"))
     @ToString.Exclude   // 무한루프 방지
     private User user;
 

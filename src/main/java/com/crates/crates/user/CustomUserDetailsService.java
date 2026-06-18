@@ -30,7 +30,7 @@ public class CustomUserDetailsService implements UserDetailsService {
 
     // JWT 필터에서 userId 기반으로 조회
     public UserDetails loadUserById(Long userId) {
-        User user = userRepository.findById(userId)
+        User user = userRepository.findByIdAndDeletedAtIsNull(userId)
                 .orElseThrow(() -> new UsernameNotFoundException("존재하지 않는 회원입니다: " + userId));
         return new CustomUserDetails(user);
     }

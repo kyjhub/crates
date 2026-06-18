@@ -31,7 +31,7 @@ public class DataInit {
             return;
         }
 
-        log.info("[DataInit] 테스트용 초기 데이터(Movie, Board) 생성을 시작합니다...");
+        log.info("[DataInit] [Content.class] 테스트용 초기 데이터(Movie, Board) 생성을 시작합니다...");
 
         // 1. Content (Movie) 데이터 생성
         Movie movie1 = Movie.builder()
