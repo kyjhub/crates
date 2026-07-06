@@ -64,7 +64,7 @@ public class AuthService {
                 .build();
 
         User savedUser = userRepository.save(user);
-        String accessToken = jwtTokenProvider.createToken(savedUser.getId()); // JWT 연결 시
+        String accessToken = jwtTokenProvider.createAccessToken(savedUser.getId()); // JWT 연결 시
         String refreshToken = refreshTokenService.issue(savedUser.getId());
 
 
@@ -88,7 +88,7 @@ public class AuthService {
 
         Long userId = userDetails.getUserId();
 
-        String accessToken = jwtTokenProvider.createToken(userId);
+        String accessToken = jwtTokenProvider.createAccessToken(userId);
         String refreshToken = refreshTokenService.issue(userId);
 
         return new TokenResponseDto(accessToken, refreshToken);     // 실제 JWT 발급 로직 적용
@@ -102,7 +102,7 @@ public class AuthService {
         RefreshTokenService.RotateResult result = refreshTokenService.rotate(oldRefreshToken);
 
         // String newAccessToken = jwtProvider.generateAccessToken(userId, "USER");
-        String newAccessToken = jwtTokenProvider.createToken(result.userId());
+        String newAccessToken = jwtTokenProvider.createAccessToken(result.userId());
 
         return new TokenResponseDto(newAccessToken, result.newTokenValue());
     }
@@ -144,7 +144,7 @@ public class AuthService {
     @Transactional
     public TokenResponseDto exchangeOAuthToken(String tempToken) {
         Long userId = oAuthTempTokenService.consume(tempToken);
-        String accessToken = jwtTokenProvider.createToken(userId);
+        String accessToken = jwtTokenProvider.createAccessToken(userId);
         String refreshToken = refreshTokenService.issue(userId);
         return new TokenResponseDto(accessToken, refreshToken);
     }

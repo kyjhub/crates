@@ -20,16 +20,16 @@ public class UserRefreshToken {
     @Column(nullable = false)
     private Long userId;
 
-    @Column(nullable = false, unique = true)
-    private String tokenValue;
+    @Column(nullable = false, unique = true, length = 36)
+    private String jti;
 
     @Column(nullable = false)
     private LocalDateTime expiresAt;
 
     @Builder
-    public UserRefreshToken(Long userId, String tokenValue, LocalDateTime expiresAt) {
+    public UserRefreshToken(Long userId, String jti, LocalDateTime expiresAt) {
         this.userId = userId;
-        this.tokenValue = tokenValue;
+        this.jti = jti;
         this.expiresAt = expiresAt;
     }
 }
