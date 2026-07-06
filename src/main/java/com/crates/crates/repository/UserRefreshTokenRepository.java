@@ -4,6 +4,7 @@ package com.crates.crates.repository;
 import com.crates.crates.entity.UserRefreshToken;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -16,4 +17,6 @@ public interface UserRefreshTokenRepository extends JpaRepository<UserRefreshTok
     void deleteByJti(String jti);
 
     void deleteByUserId(Long userId);
+
+    void deleteByExpiresAtBefore(LocalDateTime time);
 }

@@ -41,6 +41,10 @@ public class JwtTokenProvider {
         return buildToken(userId, TokenType.REFRESH, refreshExpiry, jti);
     }
 
+    public long getRefreshExpirySeconds() {
+        return refreshExpiry / 1000;
+    }
+
     private String buildToken(Long userId, TokenType type, long expiryMs, String jti) {
         Date now = new Date();
         JwtBuilder builder = Jwts.builder()

@@ -110,6 +110,10 @@ app:
   oauth2:
     redirect-uri: http://localhost:3000/oauth2/redirect
 
+scheduler:
+  refresh-token-cleanup:
+    cron: "0 0 4 * * *"
+
 logging:
   level:
     org.springframework.web: INFO

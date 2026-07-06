@@ -1,6 +1,7 @@
 package com.crates.crates.controller;
 
 import com.crates.crates.DTO.*;
+import com.crates.crates.jwt.JwtTokenProvider;
 import com.crates.crates.service.AuthService;
 import com.crates.crates.user.CustomUserDetails;
 import jakarta.validation.Valid;
@@ -19,13 +20,14 @@ import org.springframework.web.bind.annotation.*;
 public class AuthController {
 
     private final AuthService authService;
+    private final JwtTokenProvider jwtTokenProvider;
 
     // 1. 로컬(직접) 회원가입
     @PostMapping("/signup")
     public ResponseEntity<ApiResponse<AccessTokenResponseDto>> signup(@Valid @RequestBody SignupRequestDto request, HttpServletResponse response)
     {
         TokenResponseDto tokenResponse = authService.signup(request);
-        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), 14 * 24 * 60 * 60);
+        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         return ResponseEntity.status(HttpStatus.OK)
                 .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.getAccessToken()), "로컬 회원가입 성공!"));
@@ -36,7 +38,7 @@ public class AuthController {
     public ResponseEntity<ApiResponse<AccessTokenResponseDto>> login(@Valid @RequestBody LoginRequestDto request, HttpServletResponse response)
     {
         TokenResponseDto tokenResponse = authService.login(request);
-        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), 14 * 24 * 60 * 60);
+        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         return ResponseEntity.status(HttpStatus.OK)
                 .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.getAccessToken()), "로컬 로그인 성공!"));
@@ -62,7 +64,7 @@ public class AuthController {
             HttpServletResponse response)
     {
         TokenResponseDto tokenResponse = authService.refresh(refreshToken);
-        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), 14 * 24 * 60 * 60);
+        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         return ResponseEntity.status(HttpStatus.OK)
                 .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.getAccessToken()), "token 갱신 성공!"));
@@ -75,7 +77,7 @@ public class AuthController {
         
         TokenResponseDto tokenResponse = authService.exchangeOAuthToken(request.tempToken());
         
-        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), 14 * 24 * 60 * 60);
+        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
         
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         
