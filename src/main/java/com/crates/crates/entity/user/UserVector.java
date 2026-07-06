@@ -29,4 +29,12 @@ public class UserVector {
     private float[] userVector;
 
     private LocalDateTime updatedAt;
+
+    // @MapsId로 userId를 user의 fk를 pk로 쓰기 때문에 userId는 builder에 포함되면 안된다.
+    @Builder
+    private UserVector(User user, float[] userVector, LocalDateTime updatedAt) {
+        this.user = user;
+        this.userVector = userVector;
+        this.updatedAt = updatedAt;
+    }
 }
