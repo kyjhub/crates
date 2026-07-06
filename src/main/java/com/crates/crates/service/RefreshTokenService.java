@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -95,5 +96,10 @@ public class RefreshTokenService {
     @Transactional
     public void deleteByUserId(Long userId) {
         refreshTokenRepository.deleteByUserId(userId);
+    }
+
+    @Transactional
+    public void deleteExpiredTokens() {
+        refreshTokenRepository.deleteByExpiresAtBefore(LocalDateTime.now());
     }
 }

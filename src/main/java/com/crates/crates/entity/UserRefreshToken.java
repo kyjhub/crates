@@ -8,7 +8,10 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "user_refresh_tokens")
+@Table(
+        name = "user_refresh_tokens",
+        indexes = @Index(name = "idx_user_refresh_tokens_expires_at", columnList = "expiresAt")
+)
 @Getter
 @NoArgsConstructor
 public class UserRefreshToken {
