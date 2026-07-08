@@ -29,6 +29,7 @@ public class Board {
 
     private String title;
 
+    // boardType==USER_CUSTOM 일 때만 user_id=null
     @Enumerated(EnumType.STRING)
     private BoardType boardType;
 
