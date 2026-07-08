@@ -47,6 +47,32 @@ public class ContentService {
                 .build();
     }
 
+    public List<ContentResponseDto> getContentSummaries(List<Long> contentIds)
+    {
+        if (contentIds.isEmpty())
+        {
+            return Collections.emptyList();
+        }
+
+        List<ContentQueryDto> contentQueryDtoList = contentRepository.findContentsByIds(contentIds);
+
+        return contentQueryDtoList.stream()
+                .map(dto ->
+                {
+                    String imageUrl = imageService.getImageUrl(dto.getS3ObjectKey(), dto.getImageExtension());
+
+                    return ContentResponseDto.builder()
+                            .id(dto.getId())
+                            .title(dto.getTitle())
+                            .imageUrl(imageUrl)
+                            .contentType(dto.getContentType())
+                            .releaseDate(dto.getReleaseDate())
+                            .genre(dto.getGenre())
+                            .build();
+                })
+                .toList();
+    }
+
     public ContentDetailResponse getContentDetail(String dtype, Long contentId)
     {
         return switch (dtype.toUpperCase()) {
