@@ -25,15 +25,14 @@ public class Board {
     // PRE_MADE의 경우 null 허용
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "member_id")
-    private User member;
+    private User user;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "query_id")
-    private BoardQuery query;
+    private String title;
 
     @Enumerated(EnumType.STRING)
     private BoardType boardType;
 
+    private LocalDateTime createdAt;
     private LocalDateTime deletedAt; // 소프트 삭제(Soft Delete)용
 
     private Long likeCount;
