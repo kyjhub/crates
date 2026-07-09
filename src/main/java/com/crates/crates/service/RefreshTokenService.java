@@ -6,7 +6,10 @@ import com.crates.crates.jwt.JwtTokenProvider;
 import com.crates.crates.jwt.TokenType;
 import io.jsonwebtoken.JwtException;
 import com.crates.crates.repository.UserRefreshTokenRepository;
+import jakarta.persistence.LockTimeoutException;
+import jakarta.persistence.PessimisticLockException;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,16 +29,17 @@ public class RefreshTokenService {
 
     @Transactional
     public String issue(Long userId) {
-        // 1. 기존 토큰 조회
-        List<UserRefreshToken> tokens = refreshTokenRepository.findByUserIdOrderByExpiresAtAsc(userId);
+        List<UserRefreshToken> tokens;
+        try {
+            tokens = refreshTokenRepository.findByUserIdOrderByExpiresAtAsc(userId);
+        } catch (PessimisticLockException | LockTimeoutException | PessimisticLockingFailureException e) {
+            throw new BusinessException("요청이 몰려 처리가 지연되고 있습니다. 잠시 후 다시 시도해주세요.");
+        }
 
-        // 2. 최대 기기 수(3개) 유지 로직
         if (tokens.size() >= 3) {
-            // 가장 오래된(만료일이 가장 빠른) 토큰 삭제
             refreshTokenRepository.delete(tokens.get(0));
         }
 
-        // 3. 새 리프레시 토큰 발급
         String jti = UUID.randomUUID().toString();
         String refreshTokenJwt = jwtTokenProvider.createRefreshToken(userId, jti);
 
@@ -45,7 +49,6 @@ public class RefreshTokenService {
                 .expiresAt(jwtTokenProvider.getExpirationAt(refreshTokenJwt))
                 .build();
 
-        // 4. 저장 후 반환
         refreshTokenRepository.save(refreshToken);
         return refreshTokenJwt;
     }
