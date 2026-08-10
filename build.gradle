@@ -1,6 +1,6 @@
 plugins {
 	id 'java'
-	id 'org.springframework.boot' version '4.0.6'
+	id 'org.springframework.boot' version '3.5.16'
 	id 'io.spring.dependency-management' version '1.1.7'
 }
 
@@ -9,16 +9,12 @@ version = '0.0.1-SNAPSHOT'
 
 java {
 	toolchain {
-		languageVersion = JavaLanguageVersion.of(25)
+		languageVersion = JavaLanguageVersion.of(21)
 	}
 }
 
 repositories {
 	mavenCentral()
-}
-
-ext {
-	set('springAiVersion', "2.0.0-M5")
 }
 
 dependencies {
@@ -28,11 +24,9 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 	implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
-	implementation 'org.springframework.boot:spring-boot-starter-webclient'
-	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+	implementation 'org.springframework.boot:spring-boot-starter-web'
 	implementation 'org.springframework.boot:spring-boot-starter-security'
 	implementation 'org.springframework.boot:spring-boot-starter-oauth2-client'	// OAuth2 클라이언트 기능을 위한 핵심 라이브러리 추가
-	implementation 'org.springframework.ai:spring-ai-starter-vector-store-qdrant'
 	compileOnly 'org.projectlombok:lombok'
 	developmentOnly 'org.springframework.boot:spring-boot-devtools'
 	runtimeOnly 'org.postgresql:postgresql'
@@ -43,6 +37,10 @@ dependencies {
 
 	// Qdrant Java Client (벡터 DB 통신용)
 	implementation 'io.qdrant:client:1.8.0'
+	// io.qdrant:client는 grpc-protobuf/guava를 runtime scope로만 선언해서
+	// QdrantPointOperations가 직접 참조하는 타입들이 컴파일 클래스패스에 올라오지 않음 → 명시적으로 추가
+	implementation 'com.google.protobuf:protobuf-java:3.24.0'   // grpc-protobuf 1.59.0과 동일 버전
+	implementation 'com.google.guava:guava:30.1-jre'            // io.qdrant:client가 요구하는 버전
 
 	// S3Client 클래스 import
 	implementation 'software.amazon.awssdk:s3:2.25.11' // SDK v2
@@ -51,10 +49,4 @@ dependencies {
 	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
 	runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
 	runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
-}
-
-dependencyManagement {
-	imports {
-		mavenBom "org.springframework.ai:spring-ai-bom:${springAiVersion}"
-	}
 }

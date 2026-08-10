@@ -19,6 +19,14 @@ public class GlobalExceptionHandler {
                 .body(new ApiResponse<>(false, null, e.getMessage()));
     }
 
+    @ExceptionHandler(AiServerException.class)
+    public ResponseEntity<ApiResponse<Void>> handleAiServerException(AiServerException e)
+    {
+        log.error("[AI SERVER ERROR] {}", e.getMessage(), e);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(new ApiResponse<>(false, null, e.getMessage()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleException(Exception e, HttpServletRequest request)
     {
