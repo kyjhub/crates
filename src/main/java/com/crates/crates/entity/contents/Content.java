@@ -3,11 +3,8 @@ package com.crates.crates.entity.contents;
 import jakarta.persistence.*;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
-import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.type.SqlTypes;
 
-import java.time.LocalDate;
-import java.util.List;
+import java.time.Year;
 
 @Entity
 @Inheritance(strategy = InheritanceType.JOINED)
@@ -28,8 +25,5 @@ public abstract class Content {
     private String s3ObjectKey;
     private String imageExtension;
     private String title;
-    private LocalDate releaseDate;
-
-    @JdbcTypeCode(SqlTypes.ARRAY)
-    private List<String> genre;
+    private Year releaseYear;
 }

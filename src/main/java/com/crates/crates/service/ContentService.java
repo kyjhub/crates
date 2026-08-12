@@ -42,8 +42,7 @@ public class ContentService {
                 .title(dto.getTitle())
                 .imageUrl(imageUrl)
                 .contentType(dto.getContentType())
-                .releaseDate(dto.getReleaseDate())
-                .genre(dto.getGenre())
+                .releaseYear(dto.getReleaseYear())
                 .build();
     }
 
@@ -66,8 +65,7 @@ public class ContentService {
                             .title(dto.getTitle())
                             .imageUrl(imageUrl)
                             .contentType(dto.getContentType())
-                            .releaseDate(dto.getReleaseDate())
-                            .genre(dto.getGenre())
+                            .releaseYear(dto.getReleaseYear())
                             .build();
                 })
                 .toList();
@@ -107,8 +105,7 @@ public class ContentService {
                             .title(dto.getTitle())
                             .imageUrl(imageUrl)
                             .contentType(dto.getContentType())
-                            .releaseDate(dto.getReleaseDate())
-                            .genre(dto.getGenre())
+                            .releaseYear(dto.getReleaseYear())
                             .build();
                 }
         ).toList();

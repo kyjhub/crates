@@ -14,12 +14,12 @@ import java.util.Optional;
 public interface ContentRepository extends JpaRepository<Content, Long> {
 
     @Query("SELECT new com.crates.crates.DTO.ContentQueryDto(" +
-            "c.id, c.title, c.s3ObjectKey, c.imageExtension, c.dtype, c.releaseDate, c.genre) " +
+            "c.id, c.title, c.s3ObjectKey, c.imageExtension, c.dtype, c.releaseYear) " +
             "FROM Content c WHERE c.id IN :ids")
     List<ContentQueryDto> findContentsByIds(@Param("ids") List<Long> ids);
 
     @Query("SELECT new com.crates.crates.DTO.ContentQueryDto(" +
-            "c.id, c.title, c.s3ObjectKey, c.imageExtension, c.dtype, c.releaseDate, c.genre) " +
+            "c.id, c.title, c.s3ObjectKey, c.imageExtension, c.dtype, c.releaseYear) " +
             "FROM Content c WHERE c.id = :id")
     Optional<ContentQueryDto> findContentSummaryById(@Param("id") Long id);
 }

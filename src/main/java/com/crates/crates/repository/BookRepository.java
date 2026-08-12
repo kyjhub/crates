@@ -11,7 +11,7 @@ import java.util.Optional;
 
 @Repository
 public interface BookRepository extends JpaRepository<Book, Long> {
-    @Query("SELECT new com.crates.crates.DTO.BookResponseDTO(m.author, m.publisher, m.isbn, m.plot) " +
+    @Query("SELECT new com.crates.crates.DTO.BookResponseDTO(m.author, m.publisher, m.plot) " +
            "FROM Book m WHERE m.id = :id")
     Optional<BookResponseDTO> findBookDetailById(@Param("id") Long id);
 }
