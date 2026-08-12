@@ -29,8 +29,15 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-oauth2-client'	// OAuth2 클라이언트 기능을 위한 핵심 라이브러리 추가
 	compileOnly 'org.projectlombok:lombok'
 	developmentOnly 'org.springframework.boot:spring-boot-devtools'
-	runtimeOnly 'org.postgresql:postgresql'
 	annotationProcessor 'org.projectlombok:lombok'
+
+	// Flyway (DB 마이그레이션 / 1회성 데이터 시딩)
+	implementation 'org.flywaydb:flyway-core'
+	implementation 'org.flywaydb:flyway-database-postgresql'
+
+	// Java 기반 마이그레이션(V1__SeedBooks)에서 CopyManager/PGConnection을 직접 참조해야 해서
+	// runtimeOnly가 아니라 implementation으로 컴파일 클래스패스에 올림
+	implementation 'org.postgresql:postgresql'
 
 	// MinIO SDK (이미지 업로드/다운로드용)
 	implementation 'io.minio:minio:8.5.7'
