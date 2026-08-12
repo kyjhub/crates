@@ -5,8 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.time.LocalDate;
-import java.util.List;
+import java.time.Year;
 
 @Data
 @NoArgsConstructor
@@ -17,6 +16,5 @@ public class ContentResponseDto {
     private String title;
     private String imageUrl;
     private String contentType; // DTYPE (Discriminator Value)
-    private LocalDate releaseDate;
-    private List<String> genre;
+    private Year releaseYear;
 }

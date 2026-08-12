@@ -18,9 +18,10 @@ public class Book extends Content {
 
     public static final String DTYPE = "BOOK";
 
+    @Column(columnDefinition = "TEXT")
     private String author;
+
     private String publisher;
-    private String isbn;
 
     @Column(columnDefinition = "TEXT")
     private String plot;

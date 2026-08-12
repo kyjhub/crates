@@ -12,6 +12,5 @@ import lombok.NoArgsConstructor;
 public class BookResponseDTO implements ContentDetailResponse {
     private String author;
     private String publisher;
-    private String isbn;
     private String plot;
 }

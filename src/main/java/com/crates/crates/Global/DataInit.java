@@ -11,7 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDate;
+import java.time.Year;
 import java.util.List;
 
 @Slf4j
@@ -38,8 +38,7 @@ public class DataInit {
                 .title("인셉션")
                 .s3ObjectKey("movies/inception")
                 .imageExtension("jpeg")
-                .releaseDate(LocalDate.of(2010, 7, 21))
-                .genre(List.of("SF", "액션", "스릴러"))
+                .releaseYear(Year.of(2010))
                 .director(List.of("크리스토퍼 놀란"))
                 .actor(List.of("레오나르도 디카프리오", "조셉 고든 레빗"))
                 .runningTime(148)
@@ -50,8 +49,7 @@ public class DataInit {
                 .title("인터스텔라")
                 .s3ObjectKey("movies/interstellar")
                 .imageExtension("webp")
-                .releaseDate(LocalDate.of(2014, 11, 6))
-                .genre(List.of("SF", "드라마"))
+                .releaseYear(Year.of(2014))
                 .director(List.of("크리스토퍼 놀란"))
                 .actor(List.of("매튜 맥커너히", "앤 해서웨이"))
                 .runningTime(169)
@@ -62,8 +60,7 @@ public class DataInit {
                 .title("매트릭스")
                 .s3ObjectKey("movies/matrix")
                 .imageExtension("jpg")
-                .releaseDate(LocalDate.of(1999, 5, 15))
-                .genre(List.of("SF", "액션"))
+                .releaseYear(Year.of(1999))
                 .director(List.of("워쇼스키 자매"))
                 .actor(List.of("키아누 리브스"))
                 .runningTime(136)
