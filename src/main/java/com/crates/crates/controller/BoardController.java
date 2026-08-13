@@ -5,7 +5,6 @@ import com.crates.crates.DTO.ApiResponse;
 import com.crates.crates.DTO.BoardWithContentsDto;
 import com.crates.crates.DTO.ContentResponseDto;
 import com.crates.crates.service.BoardService;
-import com.crates.crates.service.ContentService;
 import com.crates.crates.service.RecommendationService;
 import com.crates.crates.user.CustomUserDetails;
 import lombok.RequiredArgsConstructor;
@@ -26,17 +25,16 @@ import java.util.List;
 @RequiredArgsConstructor
 public class BoardController {
 
-    private final ContentService contentService;
     private final RecommendationService recommendationService;
     private final BoardService boardService;
 
     @GetMapping("/list")
-    public ResponseEntity<ApiResponse<List<ContentResponseDto>>> getBoard(@RequestParam Long boardId)
+    public ResponseEntity<ApiResponse<BoardWithContentsDto>> getBoard(@RequestParam Long boardId)
     {
-        List<ContentResponseDto> contentResponseDtoList = contentService.getContents(boardId);
+        BoardWithContentsDto board = boardService.getBoardWithContents(boardId);
 
         return ResponseEntity.status(HttpStatus.OK)
-                .body(new ApiResponse<>(true, contentResponseDtoList, "보드 조회 성공"));
+                .body(new ApiResponse<>(true, board, "보드 조회 성공"));
     }
 
     //- 사용자 벡터값 기반 추천 보드 (컨텐츠 요약 정보)
