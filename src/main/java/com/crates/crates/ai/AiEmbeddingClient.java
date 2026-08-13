@@ -18,6 +18,9 @@ public class AiEmbeddingClient {
     @Value("${ai.server.embedding-path}")
     private String embeddingPath;
 
+    @Value("${ai.server.embedding-dimension}")
+    private int embeddingDimension;
+
     public float[] embed(String text) {
         EmbeddingResponse response;
         try {
@@ -33,6 +36,12 @@ public class AiEmbeddingClient {
         if (response == null || response.vector() == null) {
             throw new AiServerException("AI 서버가 빈 응답을 반환했습니다.");
         }
-        return response.vector();
+
+        float[] vector = response.vector();
+        if (vector.length != embeddingDimension) {
+            throw new AiServerException(
+                    "AI 서버 응답 벡터 차원이 올바르지 않습니다. 예상: %d, 실제: %d".formatted(embeddingDimension, vector.length));
+        }
+        return vector;
     }
 }

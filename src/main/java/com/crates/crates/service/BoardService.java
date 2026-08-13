@@ -3,6 +3,7 @@ package com.crates.crates.service;
 import com.crates.crates.DTO.BoardContentIdDto;
 import com.crates.crates.DTO.BoardWithContentsDto;
 import com.crates.crates.DTO.ContentResponseDto;
+import com.crates.crates.Global.exception.BusinessException;
 import com.crates.crates.entity.board.Board;
 import com.crates.crates.repository.BoardItemRepository;
 import com.crates.crates.repository.BoardRepository;
@@ -26,6 +27,15 @@ public class BoardService {
     private final BoardRepository boardRepository;
     private final BoardItemRepository boardItemRepository;
     private final ContentService contentService;
+
+    public BoardWithContentsDto getBoardWithContents(Long boardId)
+    {
+        Board board = boardRepository.findById(boardId)
+                .orElseThrow(() -> new BusinessException("존재하지 않는 보드입니다. boardId: " + boardId));
+        List<ContentResponseDto> contents = contentService.getContents(boardId);
+
+        return new BoardWithContentsDto(board.getId(), board.getTitle(), board.getLikeCount(), contents);
+    }
 
     public List<BoardWithContentsDto> getLikedBoards(int n)
     {
