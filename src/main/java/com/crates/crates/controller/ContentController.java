@@ -18,6 +18,7 @@ public class ContentController {
 
     private final ContentService contentService;
 
+    // 단건 요약 조회
     @GetMapping("/{contentId}")
     public ResponseEntity<ApiResponse<ContentResponseDto>> getContentSummary(@PathVariable Long contentId)
     {
@@ -25,6 +26,7 @@ public class ContentController {
         return ResponseEntity.ok(new ApiResponse<>(true, contentResponseDto, "컨텐츠 요약 조회 성공"));
     }
 
+    // 단건 상세 조회
     @GetMapping("/{dtype}/{contentId}")
     public ResponseEntity<ApiResponse<ContentDetailResponse>> getContentDetail(
             @PathVariable String dtype,
@@ -34,5 +36,5 @@ public class ContentController {
         return ResponseEntity.ok(new ApiResponse<>(true, contentDetailResponse, "컨텐츠 상세 조회 성공"));
     }
 
-
+    // 배치 상세 조회
 }

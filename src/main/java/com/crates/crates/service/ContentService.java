@@ -35,15 +35,9 @@ public class ContentService {
         ContentQueryDto dto = contentRepository.findContentSummaryById(contentId)
                 .orElseThrow(() -> new BusinessException("콘텐츠를 찾을 수 없습니다. contentId: " + contentId));
 
-        String imageUrl = imageService.getImageUrl(dto.getS3ObjectKey(), dto.getImageExtension());
+        String imageUrl = imageService.getImageUrl(dto.s3ObjectKey(), dto.imageExtension());
 
-        return ContentResponseDto.builder()
-                .id(dto.getId())
-                .title(dto.getTitle())
-                .imageUrl(imageUrl)
-                .contentType(dto.getContentType())
-                .releaseYear(dto.getReleaseYear())
-                .build();
+        return ContentResponseDto.of(dto, imageUrl);
     }
 
     public List<ContentResponseDto> getContentSummaries(List<Long> contentIds)
@@ -58,15 +52,9 @@ public class ContentService {
         return contentQueryDtoList.stream()
                 .map(dto ->
                 {
-                    String imageUrl = imageService.getImageUrl(dto.getS3ObjectKey(), dto.getImageExtension());
+                    String imageUrl = imageService.getImageUrl(dto.s3ObjectKey(), dto.imageExtension());
 
-                    return ContentResponseDto.builder()
-                            .id(dto.getId())
-                            .title(dto.getTitle())
-                            .imageUrl(imageUrl)
-                            .contentType(dto.getContentType())
-                            .releaseYear(dto.getReleaseYear())
-                            .build();
+                    return ContentResponseDto.of(dto, imageUrl);
                 })
                 .toList();
     }
@@ -98,15 +86,9 @@ public class ContentService {
 
         return contentQueryDtoList.stream().map(dto ->
                 {
-                    String imageUrl = imageService.getImageUrl(dto.getS3ObjectKey(), dto.getImageExtension());
+                    String imageUrl = imageService.getImageUrl(dto.s3ObjectKey(), dto.imageExtension());
 
-                    return ContentResponseDto.builder()
-                            .id(dto.getId())
-                            .title(dto.getTitle())
-                            .imageUrl(imageUrl)
-                            .contentType(dto.getContentType())
-                            .releaseYear(dto.getReleaseYear())
-                            .build();
+                    return ContentResponseDto.of(dto, imageUrl);
                 }
         ).toList();
     }

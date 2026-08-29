@@ -1,14 +1,10 @@
 package com.crates.crates.DTO;
 
-import lombok.AllArgsConstructor;
-import lombok.Getter;
+import lombok.Builder;
 
 /**
  * JWT 반환용 공통 DTO
  */
-@Getter
-@AllArgsConstructor
-public class TokenResponseDto {
-    private String accessToken;
-    private String refreshToken;
+@Builder
+public record TokenResponseDto(String accessToken, String refreshToken) {
 }

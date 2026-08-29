@@ -36,27 +36,27 @@ public class AuthService {
     public TokenResponseDto signup(SignupRequestDto request)
     {
         // 1. 중복 검사
-        if (userRepository.existsByLoginId(request.getLoginId()))
+        if (userRepository.existsByLoginId(request.loginId()))
         {
             throw new BusinessException("이미 사용중인 아이디입니다.");
         }
-        if (userRepository.existsByEmail(request.getEmail()))
+        if (userRepository.existsByEmail(request.email()))
         {
             throw new BusinessException("이미 사용중인 이메일입니다.");
         }
-        if (userRepository.existsByNickname(request.getNickname()))
+        if (userRepository.existsByNickname(request.nickname()))
         {
             throw new BusinessException("이미 사용중인 닉네임입니다.");
         }
 
         // 2. 비밀번호 암호화 및 유저 저장
         User user = User.builder()
-                .loginId(request.getLoginId())
-                .pwd(passwordEncoder.encode(request.getPwd()))
-                .email(request.getEmail())
-                .nickname(request.getNickname())
-                .gender(request.getGender())
-                .birthDate(request.getBirthYear())
+                .loginId(request.loginId())
+                .pwd(passwordEncoder.encode(request.pwd()))
+                .email(request.email())
+                .nickname(request.nickname())
+                .gender(request.gender())
+                .birthDate(request.birthYear())
                 .role(Role.USER)
                 .loginType(LoginType.LOCAL)
                 .provider(null)
@@ -69,17 +69,18 @@ public class AuthService {
 
 
         // 3. 회원가입 완료 후 즉시 로그인을 위한 JWT 발급
-        return new TokenResponseDto(accessToken, refreshToken); // 실제 JWT 발급 로직 적용
+        return TokenResponseDto.builder().accessToken(accessToken).refreshToken(refreshToken).build();
     }
 
+    @Transactional
     public TokenResponseDto login(LoginRequestDto request)
     {
         // 1. AuthenticationManager 위임
         // CustomUserDetailsService가 동작하여 유저 유무, LoginType.OAUTH 여부, 비밀번호 검증을 모두 수행합니다.
         Authentication authentication = authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(
-                        request.getLoginId(),
-                        request.getPwd()
+                        request.loginId(),
+                        request.pwd()
                 )
         );
 
@@ -91,7 +92,7 @@ public class AuthService {
         String accessToken = jwtTokenProvider.createAccessToken(userId);
         String refreshToken = refreshTokenService.issue(userId);
 
-        return new TokenResponseDto(accessToken, refreshToken);     // 실제 JWT 발급 로직 적용
+        return TokenResponseDto.builder().accessToken(accessToken).refreshToken(refreshToken).build();
     }
 
     // Refresh Token 갱신
@@ -104,7 +105,7 @@ public class AuthService {
         // String newAccessToken = jwtProvider.generateAccessToken(userId, "USER");
         String newAccessToken = jwtTokenProvider.createAccessToken(result.userId());
 
-        return new TokenResponseDto(newAccessToken, result.newTokenValue());
+        return TokenResponseDto.builder().accessToken(newAccessToken).refreshToken(result.newTokenValue()).build();
     }
 
     @Transactional
@@ -119,19 +120,19 @@ public class AuthService {
         }
 
         // 3. 입력된 정보에 대한 중복 검사
-        if (userRepository.existsByEmail(request.getEmail())) {
+        if (userRepository.existsByEmail(request.email())) {
             throw new BusinessException("이미 사용중인 이메일입니다.");
         }
-        if (userRepository.existsByNickname(request.getNickname())) {
+        if (userRepository.existsByNickname(request.nickname())) {
             throw new BusinessException("이미 사용중인 닉네임입니다.");
         }
 
         // 4. 유저 정보 업데이트
         user.updateProfile(
-                request.getEmail(),
-                request.getNickname(),
-                request.getGender(),
-                request.getBirthYear()
+                request.email(),
+                request.nickname(),
+                request.gender(),
+                request.birthYear()
         );
     }
 
@@ -146,6 +147,6 @@ public class AuthService {
         Long userId = oAuthTempTokenService.consume(tempToken);
         String accessToken = jwtTokenProvider.createAccessToken(userId);
         String refreshToken = refreshTokenService.issue(userId);
-        return new TokenResponseDto(accessToken, refreshToken);
+        return TokenResponseDto.builder().accessToken(accessToken).refreshToken(refreshToken).build();
     }
 }
