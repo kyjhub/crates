@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -19,13 +20,29 @@ public class ContentVectorService {
     @Value("${ai.vectorstore.qdrant.content-collection-name}")
     private String collectionName;
 
-    public void upsert(Long contentId, float[] vector) {
-        pointOperations.upsertPoint(collectionName, contentId, vector, Map.of());
+    // 콘텐츠 벡터 컬렉션을 생성하거나 기존 컬렉션의 차원을 검증한다.
+    public void ensureCollection(int vectorDimension) {
+        pointOperations.ensureCollection(collectionName, vectorDimension);
     }
 
+    // 이미 Qdrant에 저장된 content ID를 찾아 더미 벡터의 중복 저장을 방지한다.
+    public Set<Long> findExistingContentIds(List<Long> contentIds) {
+        return pointOperations.findExistingPointIds(collectionName, contentIds);
+    }
+
+    // Qdrant point ID와 payload의 content_id를 관계형 DB의 content ID로 통일해 저장한다.
+    public void upsert(Long contentId, float[] vector) {
+        pointOperations.upsertPoint(collectionName, contentId, vector, Map.of("content_id", contentId));
+    }
+
+    // 여러 콘텐츠 벡터를 Qdrant point로 변환해 배치 저장한다.
     public void upsertAll(List<ContentVectorRecord> records) {
         List<PointRecord> points = records.stream()
-                .map(record -> new PointRecord(record.contentId(), record.vector(), Map.of()))
+                .map(record -> new PointRecord(
+                        record.contentId(),
+                        record.vector(),
+                        Map.of("content_id", record.contentId())
+                ))
                 .toList();
 
         pointOperations.upsertPoints(collectionName, points);
