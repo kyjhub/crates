@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 @Getter
-public class CustomOAuth2User implements OAuth2User {
+public class CustomOAuth2User implements OAuth2User, OAuth2UserPrincipal {
 
     private final User user;                        // 💡 도메인 엔티티 캡슐화
     private final Map<String, Object> attributes;   // 소셜 원본 데이터
@@ -40,6 +40,7 @@ public class CustomOAuth2User implements OAuth2User {
     }
 
     // 비즈니스 편의를 위한 식별 ID 반환 메서드
+    @Override
     public Long getUserId() {
         return user.getId();
     }

@@ -31,8 +31,10 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
             Authentication authentication) throws IOException
     {
 
-        CustomOAuth2User oauth2User = (CustomOAuth2User) authentication.getPrincipal();
-        Long userId = oauth2User.getUserId();
+        // 구글(OIDC)은 CustomOidcUser, 카카오·네이버(OAuth2)는 CustomOAuth2User가 넘어온다.
+        // 두 타입의 공통 계약으로 받아야 제공자에 따라 ClassCastException이 나지 않는다.
+        OAuth2UserPrincipal principal = (OAuth2UserPrincipal) authentication.getPrincipal();
+        Long userId = principal.getUserId();
 
         // 임시 토큰 발급 및 Redis 저장
         String tempToken = oAuthTempTokenService.issue(userId);
