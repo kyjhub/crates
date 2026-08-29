@@ -15,6 +15,7 @@ public class SearchService {
     public float[] getQueryVector(String keyword) {
         float[] vector = aiEmbeddingClient.embed(keyword);
         log.info("[AI 서버 통신 성공] keyword: {} / vector dimension: {}", keyword, vector.length);
+        log.info("vector : {}", vector);
         return vector;
     }
 }

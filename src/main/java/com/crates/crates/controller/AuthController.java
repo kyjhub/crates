@@ -27,10 +27,10 @@ public class AuthController {
     public ResponseEntity<ApiResponse<AccessTokenResponseDto>> signup(@Valid @RequestBody SignupRequestDto request, HttpServletResponse response)
     {
         TokenResponseDto tokenResponse = authService.signup(request);
-        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
+        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.refreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         return ResponseEntity.status(HttpStatus.OK)
-                .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.getAccessToken()), "로컬 회원가입 성공!"));
+                .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.accessToken()), "로컬 회원가입 성공!"));
     }
 
     // 2. 로컬(직접) 로그인
@@ -38,10 +38,10 @@ public class AuthController {
     public ResponseEntity<ApiResponse<AccessTokenResponseDto>> login(@Valid @RequestBody LoginRequestDto request, HttpServletResponse response)
     {
         TokenResponseDto tokenResponse = authService.login(request);
-        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
+        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.refreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         return ResponseEntity.status(HttpStatus.OK)
-                .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.getAccessToken()), "로컬 로그인 성공!"));
+                .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.accessToken()), "로컬 로그인 성공!"));
     }
 
     // 3. OAuth 신규 가입 후 프로필 완성 (JWT 인증 필수)
@@ -60,14 +60,23 @@ public class AuthController {
     // Token 갱신
     @PostMapping("/refresh")
     public ResponseEntity<ApiResponse<AccessTokenResponseDto>> refresh(
-            @CookieValue("refreshToken") String refreshToken,
+            @CookieValue(value = "refreshToken", required = false) String refreshToken,
             HttpServletResponse response)
     {
+        // 쿠키가 없는 상태(최초 방문, 로그아웃 이후)는 예외가 아니라 정상적인 비로그인 상황이다.
+        // required=true로 두면 MissingRequestCookieException이 GlobalExceptionHandler까지 올라가
+        // 프론트가 부팅할 때마다 500과 스택트레이스를 남긴다.
+        if (refreshToken == null)
+        {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new ApiResponse<>(false, null, "인증이 필요합니다."));
+        }
+
         TokenResponseDto tokenResponse = authService.refresh(refreshToken);
-        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
+        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.refreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         return ResponseEntity.status(HttpStatus.OK)
-                .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.getAccessToken()), "token 갱신 성공!"));
+                .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.accessToken()), "token 갱신 성공!"));
     }
 
     @PostMapping("/oauth-token")
@@ -77,19 +86,23 @@ public class AuthController {
         
         TokenResponseDto tokenResponse = authService.exchangeOAuthToken(request.tempToken());
         
-        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.getRefreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
+        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.refreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
         
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         
         return ResponseEntity.status(HttpStatus.OK)
-                .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.getAccessToken()), "OAuth 토큰 교환 성공!"));
+                .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.accessToken()), "OAuth 토큰 교환 성공!"));
     }
 
     @PostMapping("/logout")
     public ResponseEntity<ApiResponse<Void>> logout(
-            @CookieValue("refreshToken") String refreshToken,
+            @CookieValue(value = "refreshToken", required = false) String refreshToken,
             HttpServletResponse response) {
-        authService.logout(refreshToken);
+        // 쿠키가 이미 없어도 로그아웃은 성공으로 처리한다. 클라이언트 입장에서 결과가 같아야 재시도가 안전하다.
+        if (refreshToken != null)
+        {
+            authService.logout(refreshToken);
+        }
         ResponseCookie cookie = buildRefreshTokenCookie("", 0);
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         return ResponseEntity.status(HttpStatus.OK)

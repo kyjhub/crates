@@ -61,7 +61,7 @@ public class BoardService {
                 .distinct()
                 .toList();
         Map<Long, ContentResponseDto> summaryById = contentService.getContentSummaries(allContentIds).stream()
-                .collect(Collectors.toMap(ContentResponseDto::getId, Function.identity()));
+                .collect(Collectors.toMap(ContentResponseDto::id, Function.identity()));
 
         return topBoards.stream()
                 .map(board -> new BoardWithContentsDto(
