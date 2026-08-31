@@ -1,9 +1,11 @@
-package db.migration;
+package com.crates.crates.seed;
 
+import lombok.RequiredArgsConstructor;
 import org.flywaydb.core.api.migration.BaseJavaMigration;
 import org.flywaydb.core.api.migration.Context;
 import org.postgresql.PGConnection;
 import org.postgresql.copy.CopyManager;
+import org.springframework.stereotype.Component;
 
 import java.io.InputStream;
 import java.sql.Connection;
@@ -12,11 +14,27 @@ import java.sql.Statement;
 /**
  * data/book.csv(111,094행)의 author/description_clean/title/publishedDate/imgUrl만 뽑아
  * content/book 테이블에 적재한다.
- * publisher는 원본 데이터에 없어 NULL, s3ObjectKey는 이미지 업로드 배치 작업에서 채운다.
+ * publisher는 원본 데이터에 없어 NULL.
+ * s3ObjectKey/imageExtension은 임시 테이블이 살아있는 동안 ContentImageUploader가 채운다.
  */
+@Component
+@RequiredArgsConstructor
 public class V1__SeedBooks extends BaseJavaMigration {
 
     private static final String CSV_RESOURCE = "/data/book.csv";
+
+    /** 아직 staging_asin이 살아있는 시점에만 원본 이미지 URL을 content.id와 짝지을 수 있다. */
+    private static final String IMAGE_TARGET_SQL = """
+            SELECT c.id, r.img_url
+            FROM content c
+            JOIN book_raw r ON r.asin = c.staging_asin
+            WHERE c.staging_asin IS NOT NULL
+              AND NULLIF(btrim(r.img_url), '') IS NOT NULL
+            ORDER BY c.id
+            LIMIT ?
+            """;
+
+    private final ContentImageUploader imageUploader;
 
     @Override
     public void migrate(Context context) throws Exception {
@@ -48,7 +66,7 @@ public class V1__SeedBooks extends BaseJavaMigration {
             stmt.execute("ALTER TABLE content ADD COLUMN staging_asin TEXT");
 
             stmt.execute("""
-                    INSERT INTO content (dtype, title, release_year, image_extension, staging_asin)
+                    INSERT INTO content (dtype, title, release_year, staging_asin)
                     SELECT
                         'BOOK',
                         title,
@@ -56,10 +74,6 @@ public class V1__SeedBooks extends BaseJavaMigration {
                             WHEN btrim(published_date) ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN substring(btrim(published_date) from 1 for 4)::int
                             WHEN btrim(published_date) ~ '^\\d{4}$' THEN btrim(published_date)::int
                             ELSE NULL
-                        END,
-                        CASE
-                            WHEN img_url IS NULL OR btrim(img_url) = '' THEN NULL
-                            ELSE lower(regexp_replace(split_part(img_url, '?', 1), '^.*\\.', ''))
                         END,
                         asin
                     FROM book_raw
@@ -72,6 +86,10 @@ public class V1__SeedBooks extends BaseJavaMigration {
                     JOIN book_raw r ON r.asin = c.staging_asin
                     WHERE c.staging_asin IS NOT NULL
                     """);
+
+            // image_extension은 URL 경로로 추측하지 않고, 실제 응답 Content-Type을 보고
+            // s3_object_key와 함께 채운다. 둘 중 하나만 채워진 상태가 생기지 않게 하기 위함.
+            imageUploader.seedImages(connection, IMAGE_TARGET_SQL, "book");
 
             stmt.execute("ALTER TABLE content DROP COLUMN staging_asin");
         }

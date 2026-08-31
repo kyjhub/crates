@@ -1,9 +1,11 @@
-package db.migration;
+package com.crates.crates.seed;
 
+import lombok.RequiredArgsConstructor;
 import org.flywaydb.core.api.migration.BaseJavaMigration;
 import org.flywaydb.core.api.migration.Context;
 import org.postgresql.PGConnection;
 import org.postgresql.copy.CopyManager;
+import org.springframework.stereotype.Component;
 
 import java.io.InputStream;
 import java.sql.Connection;
@@ -14,10 +16,26 @@ import java.sql.Statement;
  * content/music 테이블에 적재한다.
  * year에서는 연도만 추출하고, artists의 JSON 배열 문자열은
  * PostgreSQL varchar 배열로 변환한다.
+ * s3ObjectKey/imageExtension은 임시 테이블이 살아있는 동안 ContentImageUploader가 채운다.
  */
+@Component
+@RequiredArgsConstructor
 public class V3__SeedMusic extends BaseJavaMigration {
 
     private static final String CSV_RESOURCE = "/data/music.csv";
+
+    /** 아직 staging_music_row_id가 살아있는 시점에만 img URL을 content.id와 짝지을 수 있다. */
+    private static final String IMAGE_TARGET_SQL = """
+            SELECT c.id, r.img
+            FROM content c
+            JOIN music_raw r ON r.staging_row_id = c.staging_music_row_id
+            WHERE c.staging_music_row_id IS NOT NULL
+              AND NULLIF(btrim(r.img), '') IS NOT NULL
+            ORDER BY c.id
+            LIMIT ?
+            """;
+
+    private final ContentImageUploader imageUploader;
 
     @Override
     public void migrate(Context context) throws Exception {
@@ -103,6 +121,8 @@ public class V3__SeedMusic extends BaseJavaMigration {
                     JOIN music_raw r ON r.staging_row_id = c.staging_music_row_id
                     WHERE c.staging_music_row_id IS NOT NULL
                     """);
+
+            imageUploader.seedImages(connection, IMAGE_TARGET_SQL, "music");
 
             stmt.execute("ALTER TABLE content DROP COLUMN staging_music_row_id");
         }
