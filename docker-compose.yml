@@ -16,6 +16,32 @@ services:
     command: server /data --console-address ":9001"
     restart: unless-stopped
 
+  # MinIO 초기화: 버킷 생성 + 익명 읽기 허용 (한 번 실행하고 종료되는 일회성 컨테이너)
+  # 버킷 정책은 볼륨에 저장되므로 docker compose down -v 를 하면 같이 지워진다.
+  # 이 컨테이너가 up 할 때마다 다시 적용해주므로 수동으로 mc 명령을 칠 필요가 없다.
+  # 익명 읽기가 필요한 이유: ImageService가 서명 없는 공개 URL을 만들기 때문에,
+  # 버킷이 private이면 브라우저의 <img> 요청이 전부 403으로 떨어진다.
+  minio-init:
+    image: quay.io/minio/mc
+    container_name: minio_init
+    depends_on:
+      - minio
+    environment:
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY}
+    # $$ 는 compose가 아니라 컨테이너 안의 셸이 변수를 풀도록 이스케이프한 것.
+    # depends_on은 기동 순서만 보장하고 준비 완료를 기다려주지 않으므로 alias 성공까지 재시도한다.
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 $$STORAGE_ACCESS_KEY $$STORAGE_SECRET_KEY >/dev/null 2>&1; do
+        echo 'MinIO 기다리는 중...'; sleep 1;
+      done;
+      mc mb --ignore-existing local/content-bucket;
+      mc anonymous set download local/content-bucket;
+      echo 'content-bucket 준비 완료 (익명 읽기 허용)';
+      "
+    restart: "no"
+
   # Qdrant: AI 벡터 검색용 (취향 분석 & 유사도 추천)
   qdrant:
     image: qdrant/qdrant:latest
