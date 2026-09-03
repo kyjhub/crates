@@ -28,9 +28,6 @@ out/
 
 **/src/main/java/com/crates/crates/Global/DataInit.java
 
-### application.yaml (환경별 로컬 설정, 커밋 대상 아님) ###
-src/main/resources/application.yaml
-
 ### Book 시딩용 원본 CSV (용량이 커서 git에 올리지 않음) ###
 src/main/resources/data/
 
@@ -44,4 +41,10 @@ src/main/resources/data/
 ### VS Code ###
 .vscode/
 
+### 실제 시크릿이 담기는 파일 ###
+### application.yaml은 ${ENV_VAR} 참조만 두고, 값은 아래 파일들로 주입한다.
 .env
+*.env
+
+### macOS ###
+.DS_Store

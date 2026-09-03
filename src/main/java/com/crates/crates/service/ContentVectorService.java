@@ -25,6 +25,19 @@ public class ContentVectorService {
         pointOperations.ensureCollection(collectionName, vectorDimension);
     }
 
+    /**
+     * 컬렉션을 지우고 다시 만든다.
+     *
+     * <p>관계형 DB를 초기화하면 content.id가 1부터 다시 부여되는데, Qdrant는 그 사실을 모른다.
+     * 이전 실행의 point가 남아 있으면 시더가 "이미 있다"고 판단해 건너뛰고,
+     * 결과적으로 새 content에 옛 벡터가 매달린 채 조용히 잘못된 추천이 나간다.
+     * 로컬에서 DB를 갈아엎을 때 함께 호출한다.</p>
+     */
+    public void recreateCollection(int vectorDimension) {
+        pointOperations.deleteCollection(collectionName);
+        pointOperations.ensureCollection(collectionName, vectorDimension);
+    }
+
     // 이미 Qdrant에 저장된 content ID를 찾아 더미 벡터의 중복 저장을 방지한다.
     public Set<Long> findExistingContentIds(List<Long> contentIds) {
         return pointOperations.findExistingPointIds(collectionName, contentIds);

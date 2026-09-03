@@ -1,14 +1,19 @@
 package com.crates.crates.entity.board;
 
+import com.crates.crates.Global.exception.BusinessException;
 import com.crates.crates.entity.contents.Content;
 import com.crates.crates.entity.user.User;
 import com.crates.crates.enumData.BoardType;
+import com.crates.crates.enumData.Visibility;
 import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Entity
 @Getter // 무한루프를 방지하기 위해
@@ -18,20 +23,47 @@ import java.util.List;
 @EqualsAndHashCode(of = "id")
 public class Board {
 
+    /**
+     * 보드 하나에 담기는 콘텐츠 수. 서비스 규칙상 고정값이다.
+     * 보드를 만들어 내려보내는 쪽(검색/추천)과 저장하는 쪽(좋아요)이 같은 값을 봐야
+     * "8건으로 보여줬는데 저장은 거절당하는" 상황이 생기지 않는다.
+     */
+    public static final int ITEMS_PER_BOARD = 8;
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // PRE_MADE의 경우 null 허용
+    /**
+     * 이 보드가 귀속되는 사용자.
+     *
+     * <p>USER_CUSTOM일 때만 값이 있다. AI_RECOMMEND와 PRE_MADE는 소유자가 없는 전역 공용 보드라
+     * null이며, 그래서 한 사용자가 그 보드를 고쳐도 다른 사용자에게 영향이 가지 않도록
+     * 수정이 아니라 복제로 처리한다. 이 규칙은 import.sql의 ck_board_owner가 DB에서 강제한다.</p>
+     */
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "member_id")
+    @JoinColumn(name = "user_id")
     private User user;
 
     private String title;
 
-    // boardType==USER_CUSTOM 일 때만 user_id=null
     @Enumerated(EnumType.STRING)
     private BoardType boardType;
+
+    /** 인기 보드 노출 여부. PRIVATE은 USER_CUSTOM만 가질 수 있다(ck_board_visibility). */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private Visibility visibility;
+
+    /**
+     * 콘텐츠 8건의 id를 오름차순 정렬해 콤마로 이은 문자열. 이 보드의 "내용 정체성"이다.
+     *
+     * <p>정렬하므로 배치 순서(slotNo)가 바뀌어도 값이 변하지 않는다. 즉 순서만 바꾼 수정은
+     * 새 보드를 만들지 않는다. 해시하지 않는 이유는, AI_RECOMMEND에 unique 제약이 걸려 있어
+     * 해시 충돌이 곧 서로 다른 보드의 오병합이 되기 때문이다.</p>
+     */
+    @Column(nullable = false, length = 160)
+    private String contentSignature;
 
     private LocalDateTime createdAt;
     private LocalDateTime deletedAt; // 소프트 삭제(Soft Delete)용
@@ -48,22 +80,70 @@ public class Board {
     @Builder.Default    // @Builder가 리스트 초기화 식을 무시하는 것을 방지하기 위해
     private List<BoardItem> boardItems = new ArrayList<>(); // NullPointerException 방지를 위한 초기화
 
-
-    // 🌟 시니어 추천: 연관관계 편의 메서드 (Level 2)
-    public void addContent(Content content)
+    /**
+     * 보드의 콘텐츠를 통째로 교체한다.
+     *
+     * <p>보드는 8건 고정이라 개별 추가/삭제가 성립하지 않는다(7건이나 9건인 상태가 생긴다).
+     * 전달된 <b>순서가 곧 배치 순서</b>(slotNo 1~8)가 되고, contentSignature도 여기서 함께 갱신된다.</p>
+     *
+     * <p>signature 갱신을 서비스에 맡기지 않는 이유: 호출을 한 번만 빠뜨려도 unique 제약과
+     * 인기 보드 중복 제거가 조용히 틀어진다. 즉시 에러가 나지 않고 나중에 이상한 증상으로만
+     * 드러나는 종류라, 파생 관계를 엔티티가 직접 보장한다.</p>
+     */
+    public void replaceContents(List<Content> contents)
     {
-        BoardItem newItem = BoardItem.builder()
-                .board(this)       // 연관관계 주인(외래키) 세팅
-                .content(content)  // 목적지 컨텐츠 세팅
-                .build();
+        validateContents(contents);
 
-        // 2. 내 리스트에 추가합니다.
-        this.boardItems.add(newItem);
+        // orphanRemoval=true라 리스트를 비우면 기존 BoardItem은 DELETE된다.
+        this.boardItems.clear();
+        for (int index = 0; index < contents.size(); index++)
+        {
+            this.boardItems.add(BoardItem.builder()
+                    .board(this)
+                    .content(contents.get(index))
+                    .slotNo(index + 1)
+                    .build());
+        }
+
+        this.contentSignature = signatureOf(contents.stream().map(Content::getId).toList());
     }
 
-    public void removeContent(Content content)
+    /** 제목 변경. USER_CUSTOM 보드만 사용자가 직접 바꿀 수 있다(BoardService가 판단). */
+    public void updateTitle(String title)
     {
-        // 리스트에서 삭제만 해도 orphanRemoval=true 덕분에 DB 매핑 테이블에서 삭제됨
-        this.boardItems.removeIf(item -> item.getContent().equals(content));
+        this.title = title;
+    }
+
+    /**
+     * 정렬된 content id 문자열을 만든다.
+     *
+     * <p>저장 전에 "같은 구성의 보드가 이미 있는지" 찾아볼 때도 반드시 이 메서드로 계산해야
+     * 저장된 값과 비교가 성립한다.</p>
+     */
+    public static String signatureOf(Collection<Long> contentIds)
+    {
+        return contentIds.stream()
+                .sorted()
+                .map(String::valueOf)
+                .collect(Collectors.joining(","));
+    }
+
+    private void validateContents(List<Content> contents)
+    {
+        if (contents.size() != ITEMS_PER_BOARD)
+        {
+            throw new BusinessException(
+                    "보드에는 콘텐츠 " + ITEMS_PER_BOARD + "건이 필요합니다. 전달: " + contents.size());
+        }
+
+        // 같은 콘텐츠가 두 번 들어가면 signature가 "1,1,2,..."가 되어 8건 규칙이 무너지고
+        // 슬롯 하나가 중복 포스터로 채워진다. DB의 uk_board_item_content와 같은 규칙이다.
+        Set<Long> distinctIds = contents.stream()
+                .map(Content::getId)
+                .collect(Collectors.toSet());
+        if (distinctIds.size() != contents.size())
+        {
+            throw new BusinessException("보드에 같은 콘텐츠를 두 번 담을 수 없습니다.");
+        }
     }
 }

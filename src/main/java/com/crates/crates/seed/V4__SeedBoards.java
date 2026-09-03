@@ -32,17 +32,44 @@ public class V4__SeedBoards extends BaseJavaMigration {
      * 프론트가 두 종류의 문자열을 모두 확인할 수 있게 섞어두었다.
      * like_count를 서로 다르게 준 이유는 /api/boards/liked가 like_count DESC로 정렬하기 때문.
      */
+    /**
+     * PRE_MADE는 소유자가 없는 전역 공용 보드라 user_id는 NULL(= 컬럼 자체를 넣지 않음)이고
+     * visibility는 항상 PUBLIC이다. V5__BoardConstraints의 ck_board_owner / ck_board_visibility가
+     * 이 규칙을 검증한다.
+     *
+     * <p>content_signature는 어떤 콘텐츠 8건이 담길지 확정된 뒤에야 계산할 수 있어서
+     * 여기서는 빈 문자열로 두고, board_item을 넣은 다음 UPDATE로 채운다.</p>
+     */
     private static final String BOARD_VALUES = """
-            ('PRE_MADE', '회원님을 위한 추천', 152, now()),
-            ('PRE_MADE', '''SF 스릴러''와 비슷한 콘텐츠', 137, now()),
-            ('PRE_MADE', '비 오는 날 어울리는', 121, now()),
-            ('PRE_MADE', '''재즈''와 비슷한 콘텐츠', 98, now()),
-            ('PRE_MADE', '요즘 많이 담긴', 86, now()),
-            ('PRE_MADE', '''90년대 감성''과 비슷한 콘텐츠', 74, now()),
-            ('PRE_MADE', '취향이 비슷한 사람들이 본', 61, now()),
-            ('PRE_MADE', '''몰입감 있는''과 비슷한 콘텐츠', 47, now()),
-            ('PRE_MADE', '새벽에 어울리는', 33, now()),
-            ('PRE_MADE', '''첫 장편 소설''과 비슷한 콘텐츠', 12, now())
+            ('PRE_MADE', 'PUBLIC', '회원님을 위한 추천', '', 152, now()),
+            ('PRE_MADE', 'PUBLIC', '''SF 스릴러''와 비슷한 콘텐츠', '', 137, now()),
+            ('PRE_MADE', 'PUBLIC', '비 오는 날 어울리는', '', 121, now()),
+            ('PRE_MADE', 'PUBLIC', '''재즈''와 비슷한 콘텐츠', '', 98, now()),
+            ('PRE_MADE', 'PUBLIC', '요즘 많이 담긴', '', 86, now()),
+            ('PRE_MADE', 'PUBLIC', '''90년대 감성''과 비슷한 콘텐츠', '', 74, now()),
+            ('PRE_MADE', 'PUBLIC', '취향이 비슷한 사람들이 본', '', 61, now()),
+            ('PRE_MADE', 'PUBLIC', '''몰입감 있는''과 비슷한 콘텐츠', '', 47, now()),
+            ('PRE_MADE', 'PUBLIC', '새벽에 어울리는', '', 33, now()),
+            ('PRE_MADE', 'PUBLIC', '''첫 장편 소설''과 비슷한 콘텐츠', '', 12, now())
+            """;
+
+    /**
+     * board_item이 다 들어간 뒤 content_signature를 채운다.
+     *
+     * <p>정렬한 content_id를 콤마로 잇는 규칙은 Board.signatureOf()와 반드시 같아야 한다.
+     * 규칙이 어긋나면 애플리케이션이 "같은 구성의 보드"를 찾지 못해 중복 저장이 다시 생긴다.</p>
+     */
+    private static final String UPDATE_SIGNATURE_SQL = """
+            UPDATE board b
+               SET content_signature = s.signature
+              FROM (
+                    SELECT board_id,
+                           string_agg(content_id::text, ',' ORDER BY content_id) AS signature
+                      FROM board_item
+                     GROUP BY board_id
+                   ) s
+             WHERE b.id = s.board_id
+               AND b.content_signature = ''
             """;
 
     @Override
@@ -71,15 +98,17 @@ public class V4__SeedBoards extends BaseJavaMigration {
                     SELECT count(*) AS n FROM pool
                 ),
                 new_boards AS (
-                    INSERT INTO board (board_type, title, like_count, created_at)
+                    INSERT INTO board (board_type, visibility, title, content_signature, like_count, created_at)
                     VALUES %s
                     RETURNING id
                 ),
                 numbered AS (
                     SELECT id, row_number() OVER (ORDER BY id) - 1 AS k FROM new_boards
                 )
-                INSERT INTO board_item (board_id, content_id)
-                SELECT b.id, p.id
+                INSERT INTO board_item (board_id, content_id, slot_no)
+                -- offset_in_board가 0부터 시작하므로 +1 해서 slot 1~8로 만든다.
+                -- 이 순서가 곧 화면의 2행 4열 배치가 된다.
+                SELECT b.id, p.id, s.offset_in_board + 1
                 FROM numbered b
                 CROSS JOIN generate_series(0, %d) AS s(offset_in_board)
                 CROSS JOIN pool_size ps
@@ -94,6 +123,12 @@ public class V4__SeedBoards extends BaseJavaMigration {
             int inserted = stmt.executeUpdate(sql);
             log.info("[board] 보드 시딩 완료: 보드 {}개, 아이템 {}건 (보드당 {}건)",
                     inserted / ITEMS_PER_BOARD, inserted, ITEMS_PER_BOARD);
+        }
+
+        // 콘텐츠가 확정된 뒤에야 계산할 수 있으므로 별도 문장으로 채운다.
+        try (Statement stmt = connection.createStatement()) {
+            int updated = stmt.executeUpdate(UPDATE_SIGNATURE_SQL);
+            log.info("[board] content_signature 채움: {}개 보드", updated);
         }
     }
 

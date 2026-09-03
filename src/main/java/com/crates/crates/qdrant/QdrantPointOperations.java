@@ -56,6 +56,13 @@ public class QdrantPointOperations {
         }
     }
 
+    /** 컬렉션이 있으면 통째로 지운다. 없으면 아무 일도 하지 않는다. */
+    public void deleteCollection(String collectionName) {
+        if (await(qdrantClient.collectionExistsAsync(collectionName))) {
+            await(qdrantClient.deleteCollectionAsync(collectionName));
+        }
+    }
+
     /**
      * 전달받은 관계형 content ID 중 Qdrant에 이미 저장된 point ID만 반환한다.
      * 기존의 실제 임베딩을 더미 벡터로 덮어쓰지 않기 위한 사전 조회에 사용한다.

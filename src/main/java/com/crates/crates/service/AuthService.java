@@ -27,6 +27,7 @@ public class AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final AuthenticationManager authenticationManager;
+    private final UserVectorService userVectorService;
 
      private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenService refreshTokenService;
@@ -64,6 +65,9 @@ public class AuthService {
                 .build();
 
         User savedUser = userRepository.save(user);
+        // 취향 벡터 자리를 0으로 만들어둔다. 실제 값은 AI 서버의 배치가 채운다.
+        userVectorService.initializeFor(savedUser);
+
         String accessToken = jwtTokenProvider.createAccessToken(savedUser.getId()); // JWT 연결 시
         String refreshToken = refreshTokenService.issue(savedUser.getId());
 

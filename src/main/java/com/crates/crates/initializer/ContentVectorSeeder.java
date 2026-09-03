@@ -1,5 +1,6 @@
 package com.crates.crates.initializer;
 
+import com.crates.crates.ai.DeterministicVectorFactory;
 import com.crates.crates.repository.ContentRepository;
 import com.crates.crates.service.ContentVectorRecord;
 import com.crates.crates.service.ContentVectorService;
@@ -15,7 +16,6 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import java.util.SplittableRandom;
 
 /**
  * 로컬 개발용 Qdrant 더미 벡터 시더.
@@ -45,6 +45,13 @@ public class ContentVectorSeeder implements ApplicationRunner {
     @Value("${ai.vectorstore.qdrant.seed.random-seed:20260830}")
     private long randomSeed;
 
+    /**
+     * 시딩 전에 컬렉션을 지우고 다시 만들지 여부. 로컬에서 관계형 DB를 갈아엎을 때 켠다.
+     * 실제 임베딩을 적재하기 시작하면 반드시 false로 되돌려야 한다.
+     */
+    @Value("${ai.vectorstore.qdrant.seed.recreate:false}")
+    private boolean recreateCollection;
+
     @Override
     public void run(ApplicationArguments args) {
         validateConfiguration();
@@ -57,7 +64,16 @@ public class ContentVectorSeeder implements ApplicationRunner {
         }
 
         // 빈 Qdrant에서도 실행될 수 있도록 시딩 전에 768차원 컬렉션을 준비한다.
-        contentVectorService.ensureCollection(vectorDimension);
+        if (recreateCollection) {
+            // 관계형 DB를 초기화하면 content.id가 1부터 다시 부여된다. 이전 실행의 point가 남아 있으면
+            // 아래 findExistingContentIds가 전부 "이미 있음"으로 판단해 건너뛰고,
+            // 새 콘텐츠에 옛 벡터가 매달린 채 조용히 잘못된 추천이 나간다.
+            log.warn("Qdrant 콘텐츠 벡터 컬렉션을 지우고 다시 만듭니다. "
+                    + "실제 임베딩을 적재하기 시작하면 ai.vectorstore.qdrant.seed.recreate를 false로 되돌리세요.");
+            contentVectorService.recreateCollection(vectorDimension);
+        } else {
+            contentVectorService.ensureCollection(vectorDimension);
+        }
 
         long lastContentId = 0L;
         long insertedCount = 0L;
@@ -119,30 +135,13 @@ public class ContentVectorSeeder implements ApplicationRunner {
 
     /**
      * content ID와 고정 seed를 기반으로 재현 가능한 768차원 float32 벡터를 만든다.
-     * Cosine 유사도 검색에 사용할 수 있도록 마지막에 L2 정규화를 적용한다.
+     * 검색어 스텁 임베딩(StubEmbeddingClient)과 같은 생성기를 쓰기 때문에
+     * 두 벡터가 같은 공간에 놓이고 Cosine 검색이 성립한다.
      */
     private float[] createDeterministicVector(long contentId) {
-        SplittableRandom random = new SplittableRandom(randomSeed ^ mix64(contentId));
-        float[] vector = new float[vectorDimension];
-        double squaredSum = 0.0;
-
-        for (int index = 0; index < vector.length; index++) {
-            float value = (float) random.nextDouble(-1.0, 1.0);
-            vector[index] = value;
-            squaredSum += (double) value * value;
-        }
-
-        float norm = (float) Math.sqrt(squaredSum);
-        for (int index = 0; index < vector.length; index++) {
-            vector[index] = vector[index] / norm;
-        }
-        return vector;
-    }
-
-    // 서로 가까운 content ID도 충분히 다른 난수 시퀀스를 갖도록 64비트 ID를 혼합한다.
-    private long mix64(long value) {
-        value = (value ^ (value >>> 30)) * 0xbf58476d1ce4e5b9L;
-        value = (value ^ (value >>> 27)) * 0x94d049bb133111ebL;
-        return value ^ (value >>> 31);
+        return DeterministicVectorFactory.create(
+                randomSeed ^ DeterministicVectorFactory.mix64(contentId),
+                vectorDimension
+        );
     }
 }

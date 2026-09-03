@@ -3,9 +3,9 @@ package com.crates.crates.controller;
 
 import com.crates.crates.DTO.ApiResponse;
 import com.crates.crates.DTO.BoardLikeRequest;
+import com.crates.crates.DTO.BoardSaveRequest;
 import com.crates.crates.DTO.BoardLikeResponse;
 import com.crates.crates.DTO.BoardWithContentsDto;
-import com.crates.crates.DTO.ContentResponseDto;
 import com.crates.crates.service.BoardService;
 import com.crates.crates.service.RecommendationService;
 import com.crates.crates.user.CustomUserDetails;
@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -46,12 +47,15 @@ public class BoardController {
                 .body(new ApiResponse<>(true, board, "보드 조회 성공"));
     }
 
-    //- 사용자 벡터값 기반 추천 보드 (컨텐츠 요약 정보)
+    // 사용자 벡터값 기반 추천 보드 4개.
+    // 콘텐츠 목록이 아니라 보드로 내려주는 이유는, 이미 좋아요를 눌러 저장한 보드라면
+    // boardId와 좋아요 상태까지 함께 알려줘야 하트가 빈 채로 다시 그려지지 않기 때문이다.
+    // 보드당 8건, 노출 개수 모두 서비스 규칙상 고정이라 파라미터를 받지 않는다.
     @GetMapping("/recommendation/user")
-    public ResponseEntity<ApiResponse<List<ContentResponseDto>>> getRecommendation(@AuthenticationPrincipal CustomUserDetails userDetails, @RequestParam int n)
+    public ResponseEntity<ApiResponse<List<BoardWithContentsDto>>> getRecommendation(
+            @AuthenticationPrincipal CustomUserDetails userDetails)
     {
-        Long userId = userDetails.getUserId();
-        List<ContentResponseDto> result = recommendationService.recommend(userId, n);
+        List<BoardWithContentsDto> result = recommendationService.recommendBoards(userDetails.getUserId());
 
         return ResponseEntity.status(HttpStatus.OK)
                 .body(new ApiResponse<>(true, result, "추천 보드 조회 성공"));
@@ -68,8 +72,45 @@ public class BoardController {
                 .body(new ApiResponse<>(true, result, "인기 보드 조회 성공"));
     }
 
-    //- 사용자가 직접 제작한 보드 [사용자가 제목도 직접 작성]
-    //- 검색어와 벡터값이 유사한 컨텐츠를 모아놓은 보드 [사용자의 검색과 동시에 보여줘야함] [ai서버에서 검색어 벡터값 받아야함]
+    // 내 보드 — 내가 만든 보드 + 내가 좋아요한 보드를 합쳐 좋아요 많은 순으로.
+    // 이 서비스에서 좋아요는 사실상 "내 크레이트에 담기"라, 두 경로를 한 곳에서 보여준다.
+    @GetMapping("/mine")
+    public ResponseEntity<ApiResponse<List<BoardWithContentsDto>>> getMyBoards(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestParam int n)
+    {
+        List<BoardWithContentsDto> result = boardService.getMyBoards(n, userDetails.getUserId());
+
+        return ResponseEntity.status(HttpStatus.OK)
+                .body(new ApiResponse<>(true, result, "내 보드 조회 성공"));
+    }
+
+    // 아직 저장되지 않은 보드(추천/검색 보드)를 사용자가 고쳤을 때. 내 보드로 새로 만든다.
+    @PostMapping
+    public ResponseEntity<ApiResponse<BoardWithContentsDto>> createBoard(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @Valid @RequestBody BoardSaveRequest request)
+    {
+        BoardWithContentsDto result = boardService.createUserBoard(request, userDetails.getUserId());
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(new ApiResponse<>(true, result, "보드 생성 성공"));
+    }
+
+    // 보드의 제목과 콘텐츠를 통째로 갱신한다. 배열 순서가 곧 배치 순서(slot 1~8)라,
+    // 제목 변경·콘텐츠 교체·순서 변경이 모두 같은 요청으로 처리된다.
+    // 내 보드가 아니면 원본을 건드리지 않고 복제본을 만들어 돌려주므로, 응답의 boardId를 반영해야 한다.
+    @PutMapping("/{boardId}")
+    public ResponseEntity<ApiResponse<BoardWithContentsDto>> updateBoard(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @PathVariable Long boardId,
+            @Valid @RequestBody BoardSaveRequest request)
+    {
+        BoardWithContentsDto result =
+                boardService.updateBoard(boardId, request, userDetails.getUserId());
+
+        return ResponseEntity.ok(new ApiResponse<>(true, result, "보드 수정 성공"));
+    }
 
     //- 이미 저장된 보드에 좋아요
     @PostMapping("/{boardId}/likes")

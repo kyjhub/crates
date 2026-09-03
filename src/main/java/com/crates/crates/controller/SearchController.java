@@ -1,11 +1,14 @@
 package com.crates.crates.controller;
 
 import com.crates.crates.DTO.ApiResponse;
+import com.crates.crates.DTO.BoardWithContentsDto;
 import com.crates.crates.service.SearchService;
+import com.crates.crates.user.CustomUserDetails;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,8 +23,20 @@ public class SearchController {
 
     private final SearchService searchService;
 
-    // 검색어를 AI 서버로 전달해 벡터를 계산한다. 벡터 자체는 프론트로 내려주지 않고,
-    // 추후 유사 콘텐츠 조회(ContentVectorService 연동)에 내부적으로 사용할 예정이다.
+    // 홈 화면 검색. 검색어 벡터와 유사한 콘텐츠를 모아 보드 한 장으로 내려준다.
+    // 이 보드는 아직 저장되지 않은 상태라 boardId가 null이며,
+    // 사용자가 좋아요를 누르는 시점에 POST /api/boards/likes로 저장된다.
+    @GetMapping("/board")
+    public ResponseEntity<ApiResponse<BoardWithContentsDto>> searchBoard(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            @RequestParam @NotBlank(message = "검색어를 입력해주세요.") @Size(max = 100, message = "검색어는 100자를 초과할 수 없습니다.") String keyword)
+    {
+        // 좋아요 여부는 사용자마다 다르므로 보드를 만들 때 함께 판단한다.
+        BoardWithContentsDto board = searchService.searchBoard(keyword, userDetails.getUserId());
+        return ResponseEntity.ok(new ApiResponse<>(true, board, "검색 보드 조회 성공"));
+    }
+
+    // 벡터 계산만 확인하는 디버그용 엔드포인트. 실제 화면은 /board를 쓴다.
     @GetMapping("/vector")
     public ResponseEntity<ApiResponse<Void>> requestQueryVector(
             @RequestParam @NotBlank(message = "검색어를 입력해주세요.") @Size(max = 100, message = "검색어는 100자를 초과할 수 없습니다.") String keyword)

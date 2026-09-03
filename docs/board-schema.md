@@ -1,0 +1,533 @@
+# Board 도메인 설계
+
+보드 5종을 **단일 `board` 테이블**로 표현하기 위한 스키마와 결정 근거를 정리한다.
+결정의 배경(왜 다른 안을 버렸는지)까지 남기는 이유는, 나중에 같은 논의를 반복하지 않기 위해서다.
+
+---
+
+## 1. 배경 — 왜 테이블을 나누지 않았나
+
+보드 종류가 5개라서 `user_board` / `ai_board`로 나누는 안을 먼저 검토했고, 다음 이유로 버렸다.
+
+- **인기 보드 랭킹이 깨진다.** 좋아요 상위 정렬은 전체 보드를 대상으로 하는데, 테이블이 갈리면
+  UNION 후 재정렬이라 인덱스를 못 타고 페이징도 불가능해진다.
+- **`board_feedback`이 FK를 걸 곳을 잃는다.** 좋아요는 보드 종류를 가리지 않는다. 대상 테이블이
+  여러 개면 polymorphic FK(= FK 제약 포기)로 가야 하고, 지금 `unique(board_id, user_id)`로
+  좋아요 연타를 DB가 막고 있는 방어가 통째로 사라진다.
+- **종류가 늘 때마다 테이블이 는다.**
+
+테이블 분리가 정당한 것은 **컬럼 집합이 근본적으로 다를 때**다. 5종은 전부
+`제목 + 콘텐츠 8건 + 좋아요 수`로 구조가 같고, 다른 것은 *만들어진 경위*뿐이다.
+그건 컬럼 하나로 표현되는 값이지 테이블을 가를 근거가 아니다.
+
+실제 문제는 테이블이 하나여서가 아니라 **세 축이 한 필드에 뭉개져 있어서** 생긴 것이었다.
+
+| 축 | 질문 | 담당 컬럼 |
+|---|---|---|
+| 출처 | 어떻게 만들어졌나 | `board_type` |
+| 귀속 | 누구 것인가 | `user_id` |
+| 공개 | 남에게 보여도 되나 | `visibility` |
+
+---
+
+## 2. 스키마
+
+```sql
+CREATE TABLE board (
+    id                BIGSERIAL PRIMARY KEY,
+    board_type        VARCHAR(20)  NOT NULL,   -- PRE_MADE | AI_RECOMMEND | USER_CUSTOM
+    user_id           BIGINT       NULL     REFERENCES member(id),
+    visibility        VARCHAR(10)  NOT NULL,   -- PUBLIC | PRIVATE
+    title             VARCHAR(255) NULL,
+    content_signature VARCHAR(160) NOT NULL,
+    like_count        BIGINT       NOT NULL DEFAULT 0,
+    created_at        TIMESTAMP    NOT NULL,
+    deleted_at        TIMESTAMP    NULL,       -- 소프트 삭제
+
+    -- USER_CUSTOM이면 소유자 필수, 나머지는 반드시 NULL
+    CONSTRAINT ck_board_owner
+        CHECK ((board_type = 'USER_CUSTOM') = (user_id IS NOT NULL)),
+
+    -- PRIVATE은 USER_CUSTOM만 가능
+    CONSTRAINT ck_board_visibility
+        CHECK (visibility = 'PUBLIC' OR board_type = 'USER_CUSTOM')
+);
+
+-- AI_RECOMMEND는 소유자가 없는 전역 공용 보드다. 콘텐츠 구성이 같으면 같은 보드 (전역 유일)
+CREATE UNIQUE INDEX uk_board_ai_signature ON board (content_signature)
+    WHERE board_type = 'AI_RECOMMEND' AND deleted_at IS NULL;
+
+-- USER_CUSTOM은 사용자 1명당 같은 구성의 보드를 1개만 가질 수 있다
+CREATE UNIQUE INDEX uk_board_user_signature ON board (user_id, content_signature)
+    WHERE board_type = 'USER_CUSTOM' AND deleted_at IS NULL;
+
+-- 인기 보드: 정렬을 인덱스로 해결하고 id로 전순서를 확정한다
+CREATE INDEX idx_board_popular ON board (like_count DESC, id)
+    WHERE visibility = 'PUBLIC' AND deleted_at IS NULL;
+
+-- 내가 만든 보드
+CREATE INDEX idx_board_owner ON board (user_id, board_type)
+    WHERE deleted_at IS NULL;
+```
+
+### board_item
+
+콘텐츠 배치 순서를 담기 위해 `slot_no`를 추가한다. 보드는 2행 4열로 렌더링된다.
+
+```
+1 2 3 4
+5 6 7 8
+```
+
+```sql
+ALTER TABLE board_item ADD COLUMN slot_no SMALLINT NOT NULL;
+
+-- 슬롯은 1~8만 유효
+ALTER TABLE board_item ADD CONSTRAINT ck_board_item_slot
+    CHECK (slot_no BETWEEN 1 AND 8);
+
+-- 한 보드에 같은 슬롯이 둘이면 렌더링이 깨진다
+CREATE UNIQUE INDEX uk_board_item_slot ON board_item (board_id, slot_no);
+
+-- 한 보드에 같은 콘텐츠가 두 번 들어가면 signature가 "1,1,2,..."가 되어 8건 규칙이 무너진다
+CREATE UNIQUE INDEX uk_board_item_content ON board_item (board_id, content_id);
+```
+
+**`slot_no`는 모든 보드 타입이 갖는다** (NOT NULL). 사용자가 직접 정할 수 있는 것은
+`USER_CUSTOM`뿐이고, 나머지는 생성 시점에 자동으로 채운다.
+
+| 타입 | slot_no 결정 방식 |
+|---|---|
+| `USER_CUSTOM` | 사용자가 배치 |
+| `AI_RECOMMEND` | Qdrant 유사도 순 (1위 → slot 1) |
+| `PRE_MADE` | 운영자가 정한 순서 |
+
+nullable로 두면 조회 시 정렬 기준이 사라져 순서가 매번 달라진다. 값이 없는 보드를 허용하지 않는다.
+
+> **컬럼명 주의**: `position`은 SQL 표준 함수명(`POSITION(x IN y)`)이라 헷갈리기 쉽고,
+> `order`는 확실한 예약어다. `slot_no`를 쓴다.
+
+> **주의**: 부분 유니크 인덱스(`WHERE` 절)와 `CHECK` 제약은 JPA 애노테이션으로 표현할 수 없다.
+> 현재 `ddl-auto: create`로 스키마를 만들고 있으므로, 이 제약들은 **Flyway 마이그레이션으로
+> 따로 추가**해야 한다. 엔티티에만 규칙을 적어두면 DB가 지켜주지 않는다.
+
+### 필드 규칙
+
+| 필드 | 규칙 |
+|---|---|
+| `board_type` | `PRE_MADE` / `AI_RECOMMEND` / `USER_CUSTOM` 3종. **`SEARCH`는 별도 타입이 아니라 `AI_RECOMMEND`에 통합** (3-2 참고) |
+| `user_id` | `USER_CUSTOM`일 때만 값. 나머지는 NULL(= 전역 공용, 소유자 없음) |
+| `visibility` | `USER_CUSTOM`만 `PRIVATE` 선택 가능. 기본은 `PUBLIC`. 나머지 타입은 항상 `PUBLIC` |
+| `content_signature` | 콘텐츠 8건의 id를 **오름차순 정렬해 콤마로 이은 문자열**. 해시하지 않음 (3-1). 보드 수정이 가능하므로 불변이 아니다 — 콘텐츠가 바뀌면 반드시 재계산 (9-4) |
+| `like_count` | 원자적 증감(`UPDATE ... SET like_count = like_count ± 1`). 엔티티에 setter를 열지 않는다 |
+
+### 보드 종류별 정리
+
+| 종류 | `board_type` | `user_id` | `visibility` | 저장 시점 |
+|---|---|---|---|---|
+| 서비스 초기 큐레이션 | `PRE_MADE` | NULL | PUBLIC | 운영 시작 전 미리 |
+| 사용자 벡터 기반 추천 | `AI_RECOMMEND` | NULL | PUBLIC | **좋아요 받을 때만** |
+| 검색어 기반 보드 | `AI_RECOMMEND` | NULL | PUBLIC | **좋아요 받을 때만** |
+| 사용자 제작 | `USER_CUSTOM` | 만든 사용자 | 사용자 선택 | 생성 즉시 |
+| 좋아요 많이 받은 보드 | — | — | — | 별도 종류가 아니라 **위 보드들의 `like_count` 정렬 결과** |
+
+"인기 보드"만 층위가 달랐던 것이 컬럼으로 내려오면서 자연히 해소됐다.
+
+---
+
+## 3. content_signature
+
+### 3-1. 해시하지 않는 이유
+
+모든 보드가 콘텐츠 **8건 고정**이므로 정렬한 id를 문자열 그대로 저장한다.
+
+```
+content_signature = "12,45,88,102,377,891,1204,2038"
+```
+
+`bigint` 최대 19자리 × 8 + 구분자 7 = 159자이므로 `VARCHAR(160)`이면 어떤 경우에도 안전하다.
+(현재 데이터는 book 12만 + movie 4만 + music 190만 ≈ 206만 건이라 7자리씩, 실제로는 64자 내외)
+
+해시를 피한 이유는 하나다. **`AI_RECOMMEND`에 unique 제약이 걸려 있어서, 해시가 충돌하면
+콘텐츠가 다른 두 보드가 잘못 병합된다.** raw 문자열이면 충돌이 원천적으로 0이고,
+디버깅할 때 눈으로 읽을 수 있다는 덤도 있다.
+
+**정렬은 필수다.** 두 가지 이유가 겹친다.
+
+1. Qdrant의 HNSW는 exact search가 아니라 근사(ANN) 검색이라, 같은 벡터로 조회해도 top-8의
+   *순서*가 흔들릴 수 있다. 정렬하지 않으면 순서만 뒤바뀌어도 매번 새 보드가 쌓인다.
+2. `USER_CUSTOM` 보드는 사용자가 배치 순서(`slot_no`)를 바꿀 수 있는데, **순서가 바뀌어도
+   내부 콘텐츠가 같으면 같은 보드로 취급**해야 한다. signature가 정렬 기반이므로 이 요구가
+   자동으로 충족된다 — 순서만 바꾼 수정은 signature가 변하지 않아 새 보드가 생기지 않는다.
+
+즉 `content_signature`는 **콘텐츠 집합**을 나타내고, `slot_no`는 **표시 순서**를 나타낸다.
+두 관심사가 분리돼 있다.
+
+### 3-2. 제목(query)을 signature에 넣지 않는 이유
+
+`SEARCH`를 `AI_RECOMMEND`에 통합하면서 "제목이 출처별로 다른데 행은 하나뿐"이라는 문제를
+검토했으나, **제목 정책(4장) 자체가 이 문제를 해소한다.** 제목이 콘텐츠 8건에서 결정론적으로
+파생되므로 같은 콘텐츠면 어느 경로로 들어와도 같은 제목이 나온다.
+
+오히려 signature에 query를 넣으면 손해다.
+
+```
+현재:  {1..8} → 평균벡터 V → 최근접 query "재즈 명반"  → 저장 (좋아요 40)
+query "모던 재즈 입문" 추가 → V에 더 가까움
+이후:  {1..8} → 평균벡터 V → 최근접 query "모던 재즈 입문"
+
+signature에 query 포함 → "1,..,8|모던재즈입문" ≠ "1,..,8|재즈명반"
+  → 콘텐츠가 완전히 같은 보드가 둘로 갈라진다
+  → 좋아요 40과 신규 좋아요가 분산되어 인기 랭킹이 흐려진다
+```
+
+평균벡터 → query 매칭도 HNSW 근사 검색이라, signature에 query가 있으면 그 흔들림이
+그대로 보드 분열로 이어진다. **signature는 콘텐츠 8건만으로 구성한다.**
+
+### 3-3. 중복 허용 범위
+
+| 대상 | 동일 signature 허용? | 근거 |
+|---|---|---|
+| `AI_RECOMMEND` 내부 | **불가** (전역 unique) | 소유자가 없는 전역 공용 보드다. 하나로 모아야 좋아요가 분산되지 않는다 |
+| `USER_CUSTOM` — 같은 사용자 | **불가** (사용자별 unique) | 한 사람이 같은 구성의 보드를 여러 개 가질 이유가 없다 |
+| `USER_CUSTOM` — 다른 사용자 | 허용 | 사용자 창작물이다. 콘텐츠가 같아도 제목·의도가 다른 별개의 물건이다 |
+| 타입 간 (`USER_CUSTOM` ↔ `AI_RECOMMEND` ↔ `PRE_MADE`) | 허용 | 병합하면 **소유권이 전염된다**(아래) |
+
+**타입 간 병합을 하지 않는 결정적 이유:**
+
+```
+A가 '새벽에 혼자 듣는 것' 보드 제작 (PUBLIC, owner=A)
+B가 검색 → 콘텐츠가 우연히 동일 → 병합 규칙에 따라 A의 보드에 좋아요
+A가 보드를 PRIVATE로 전환하거나 삭제
+  → B가 좋아요한 보드가 B의 목록에서 사라진다
+```
+
+전역 공용이어야 할 `AI_RECOMMEND` 보드가 A 한 사람의 처분에 종속된다.
+**콘텐츠 구성이 같다고 해서 같은 보드가 아니다.**
+
+---
+
+## 4. 제목 정책
+
+| 종류 | 제목 |
+|---|---|
+| `USER_CUSTOM` | 사용자가 직접 작성. 변경하지 않고 유지할 수도 있음 |
+| `AI_RECOMMEND` | 보드 콘텐츠 8건의 **평균 벡터와 가장 가까운 `query`** (Qdrant `query_vector` 컬렉션) |
+| `PRE_MADE` | 운영자가 작성 |
+
+`query`와 `query_vector`는 AI 개발자가 서비스 운영 전에 Qdrant에 적재한다.
+추천 보드와 검색 보드 모두 같은 규칙을 쓴다.
+
+- 사용자 벡터 기반 추천: user_vector로 콘텐츠 8건 조회 → 8건의 평균 벡터 → 최근접 query = 제목
+- 검색 보드: 검색어 벡터로 콘텐츠 8건 조회 → 8건의 평균 벡터 → 최근접 query = 제목
+
+**저장된 보드의 제목은 저장 시점 값으로 고정한다.** 나중에 query가 추가되어 더 가까운 것이
+생겨도 바꾸지 않는다. 좋아요 40개는 "재즈 명반"이라는 이름의 보드에 붙은 것이고,
+제목이 어느 날 바뀌면 그 좋아요가 무엇에 대한 것이었는지 흐려진다.
+
+### 부수 효과 — Qdrant 호출이 2회
+
+제목을 구하려면 미저장 보드에서도 query 매칭이 필요하므로, 홈 진입/검색마다
+**콘텐츠 검색 + query 매칭**으로 Qdrant를 두 번 친다. 6장의 캐시가 그만큼 중요해진다.
+
+---
+
+## 5. 인기 보드 조회
+
+```sql
+SELECT ... FROM board
+ WHERE visibility = 'PUBLIC' AND deleted_at IS NULL
+ ORDER BY like_count DESC, id ASC
+ LIMIT 16;
+```
+
+애플리케이션에서 같은 `content_signature`를 묶어 하나만 남기고 **앞 8개**를 응답한다.
+
+### 5-1. 중복 제거 우선순위
+
+같은 signature가 둘 이상 뽑혔을 때만 적용한다. 세 단계로 판단한다.
+
+1. **타입 우선순위** — `USER_CUSTOM` > `AI_RECOMMEND` > `PRE_MADE`.
+   사용자 창작물이 알고리즘·운영자 보드보다 앞선다. 좋아요 수와 무관하게 이 단계가 먼저다.
+2. **같은 타입이면 좋아요가 많은 쪽.** 인기 보드 목록에서 적게 받은 쪽을 남길 이유가 없다.
+3. **좋아요까지 같으면 먼저 만들어진 쪽**(`id`가 작은 쪽).
+
+> 후보는 이미 좋아요 순으로 정렬돼 들어오지만, 비교 함수는 그 순서에 기대지 않는다.
+> 호출하는 쪽의 정렬이 바뀌면 조용히 다른 보드가 뽑히기 때문이다.
+
+> 이 우선순위는 **뽑힌 16개 안에서만** 적용된다. top-16 밖의 보드를 끌어올리지 않는다.
+> 즉 좋아요가 압도적인 `AI_RECOMMEND` 보드 A만 목록에 들고 같은 콘텐츠의 `USER_CUSTOM` 보드 B가
+> 밖에 있다면, A를 빼고 B를 넣지 않는다. A가 그대로 남는다.
+
+### 5-2. `LIMIT 16`인 이유
+
+중복 제거로 결과가 8개 미만이 되는 것을 막기 위한 여유분이다. 중복 자체가 드물 것이므로
+2배면 충분하다. 부족한 채로 내려보내는 것보다, 다음 순위로 채우는 편이 API 계약상 설명하기 쉽다.
+
+### 5-3. `ORDER BY`에 `id`를 넣는 이유
+
+SQL의 `ORDER BY`는 지정한 컬럼이 모두 같은 행들 사이의 순서를 **보장하지 않는다.**
+`like_count`는 초기 서비스에서 0~2에 몰리므로 **`LIMIT 16`의 경계가 동률일 확률이 사실상 100%** 다.
+그러면 "16개 중 어느 16개인지"가 실행마다 달라질 수 있고, 그 결과 5-1의 중복 제거 결과까지
+흔들린다. 데이터는 그대로인데 새로고침마다 다른 보드가 뜨게 된다.
+
+특히 좋아요는 `UPDATE`인데, PostgreSQL은 MVCC라 UPDATE가 제자리 수정이 아니라 **새 튜플 버전을
+힙 뒤쪽에 쓴다.** 행의 물리적 위치가 바뀌므로 seq scan이 읽는 순서도 바뀐다.
+즉 **좋아요가 하나 눌릴 때마다 동률 그룹의 내부 순서가 뒤집힐 수 있다.**
+
+`id`는 PK라 유일하므로 맨 뒤에 붙이면 전순서가 확정된다. `idx_board_popular`에 `id`가
+포함돼 있어 정렬 연산 없이 인덱스를 앞에서부터 읽으므로 **추가 비용은 없다.**
+
+`created_at`은 정렬에 넣지 않는다. "먼저 만들어진 것 우선"은 5-1의 중복 제거에서만 쓰는 규칙이고,
+`id`가 어차피 생성 순서라 방향이 같다.
+
+---
+
+## 6. 캐시
+
+`user_vector`와 콘텐츠는 최소 하루 1회 갱신되므로 캐시 적중률이 높다.
+
+| 대상 | 키 | 비고 |
+|---|---|---|
+| 사용자 추천 보드 | `rec:user:{userId}:{vectorUpdatedAt}` | `UserVector.updatedAt`을 키에 넣어 **TTL 없이 자연 무효화**. 벡터가 갱신되면 키가 바뀐다 |
+| 검색 보드 | `search:{keyword}` | 검색어는 무한히 늘어나므로 **TTL 필수** |
+
+캐시에는 콘텐츠 8건과 확정된 제목을 함께 담는다(제목도 Qdrant 호출이 필요하므로).
+
+---
+
+## 7. 콜드 스타트
+
+**가입 시점에 `user_vector` 행을 0 벡터로 만들어둔다** (`UserVectorService.initializeFor`).
+로컬 가입(`AuthService.signup`)과 소셜 가입(`OAuth2UserRegistrar`) 양쪽에서 호출한다.
+
+행을 미리 만들어두면 AI 배치가 INSERT/UPDATE를 구분할 필요가 없고, 조회하는 쪽도
+"행이 아직 없는 경우"를 다루지 않아도 된다.
+
+**0은 "아직 취향이 계산되지 않았다"는 표시값이다.** Cosine 거리는 0 벡터에 대해 정의되지 않으므로
+(‖0‖ = 0이라 정규화할 수 없다) 그대로 Qdrant에 넣으면 오류가 나거나 의미 없는 결과가 돌아온다.
+`RecommendationService.recommend()`가 `UserVectorService.isUninitialized()`로 걸러내고
+빈 콘텐츠 목록을 돌려준다. 프론트는 `BoardCollage`의 빈 상태를 그린다.
+
+→ **아직 미구현**: 이 상태에서 `PRE_MADE` 보드로 폴백하면 신규 사용자도 첫 화면에서 보드를 본다.
+"서비스 초기를 위해 미리 만들어놓은 보드"라는 `PRE_MADE`의 존재 이유와 맞아떨어진다.
+어느 보드를 고를지(최다 좋아요 / 사용자별 결정론적 선택)는 정해야 한다.
+
+---
+
+## 8. 저장 시점
+
+| 종류 | 저장 |
+|---|---|
+| `USER_CUSTOM` | 좋아요와 무관하게 **생성 즉시** |
+| `AI_RECOMMEND` | **좋아요를 받은 시점에만** |
+| `PRE_MADE` | 운영 시작 전 미리 |
+
+`AI_RECOMMEND`를 미리 저장하지 않는 이유는 저장공간이다. 사용자 1만 명에게 매일 보드를
+저장하면 `board` 연 365만 행, `board_item` 연 2,920만 행인데 그중 좋아요를 받는 것은 극소수다.
+
+**좋아요가 0이 되어도 행은 유지한다.** soft delete하면 unique 인덱스의 `deleted_at IS NULL`
+조건 때문에 같은 signature가 다시 저장 가능해져서, 같은 내용의 보드가 삭제/생성을 반복하며
+오히려 행이 누적된다. 남겨두면 다음에 같은 구성이 나왔을 때 그 행이 재사용된다.
+
+---
+
+## 9. 보드 수정
+
+**사용자에게 보여지는 모든 보드는 수정 가능하다.** 다만 원본의 소유 상태에 따라 두 갈래로 갈린다.
+
+| 수정 대상 | 콘텐츠 교체 | 순서(`slot_no`)만 변경 |
+|---|---|---|
+| `USER_CUSTOM` (본인 것) | **in-place** | **in-place** |
+| `AI_RECOMMEND` / `PRE_MADE` | **복제** | **복제** |
+
+콘텐츠를 바꾸든 순서만 바꾸든 판단 기준은 같다 — **원본에 소유자가 있는가.**
+`AI_RECOMMEND`와 `PRE_MADE`는 `user_id = NULL`인 전역 공용 보드라, 한 사용자가 순서를 바꾸면
+그 보드를 좋아요한 다른 모든 사용자의 화면이 함께 바뀐다. 콘텐츠 교체와 똑같은 소유권 전염이다.
+
+순서만 바꿔 복제하면 사본의 `content_signature`가 원본과 **같다.** 그래도 저장에 문제가 없다.
+unique 인덱스가 타입별로 분리돼 있어(`uk_board_ai_signature` / `uk_board_user_signature`)
+서로 충돌하지 않는다. 단, 그 사용자가 이미 같은 구성의 보드를 갖고 있으면 거절된다(9-2).
+
+### 9-1. 왜 in-place 전환이 아니라 복제인가
+
+`AI_RECOMMEND`와 `PRE_MADE`는 `user_id = NULL`인 **전역 공용** 보드다. 여러 사용자가 좋아요를
+눌렀을 수 있다. `board_type`을 `USER_CUSTOM`으로 바꾸고 `user_id`를 채우는 방식이라면:
+
+```
+AI_RECOMMEND 보드 42 (signature "1..8", likeCount=40)  ← 40명이 좋아요
+사용자 A가 콘텐츠 1건 교체 → in-place 전환
+
+  → 40명이 좋아요한 공용 보드가 A의 개인 보드로 변신한다
+  → 나머지 39명은 자기가 좋아요한 보드의 내용이 A에 의해 바뀌고,
+     A가 PRIVATE로 돌리면 목록에서 사라진다
+```
+
+이것은 3-3에서 타입 간 병합을 막았던 **소유권 전염**과 같은 문제다. 병합은 막아놓고 수정으로
+뚫리면 의미가 없다.
+
+`likeCount = 1`(수정하는 본인뿐)인 경우에 한해 in-place를 허용하는 안도 검토했으나 채택하지
+않았다. 조건 분기를 두면 "어제는 in-place였는데 오늘은 복제"가 되어 동작을 설명하기 어렵고,
+그 사이 누가 좋아요를 누르면 케이스가 뒤집힌다. **조건 없이 항상 복제한다.**
+
+### 9-2. 복제 규칙
+
+| 대상 | 처리 |
+|---|---|
+| 원본 보드 | **변경 없음.** `like_count`, `board_feedback` 모두 그대로 |
+| 원본에 눌렀던 본인 좋아요 | **그대로 유지.** 사본으로 이관하지 않는다 |
+| 사본 `board_type` | `USER_CUSTOM` |
+| 사본 `user_id` | 수정한 사용자 |
+| 사본 `visibility` | `PUBLIC` (사용자 제작 기본값, 이후 변경 가능) |
+| 사본 `like_count` | `0` |
+| 사본 `title` | 원본 제목을 초기값으로 복사. `USER_CUSTOM`이므로 사용자가 바꿀 수 있다 |
+| 사본 `content_signature` | 수정된 콘텐츠 8건으로 새로 계산 |
+| 사본 `board_item.slot_no` | 사용자가 배치한 순서 |
+
+**저장 전 `uk_board_user_signature` 검사가 필요하다.** 수정 결과가 그 사용자가 이미 가진
+다른 보드와 같은 구성이 되면 unique 위반이다. 이는 정상적인 거절이므로
+`"이미 같은 구성의 보드를 갖고 계세요"`로 400을 내려주고, 프론트도 이 분기를 처리해야 한다.
+
+> ⚠️ **in-place 수정에서는 이 검사에서 자기 자신을 제외해야 한다.**
+> 순서만 바꾼 수정은 signature가 그대로이므로, 자기 행까지 포함해 조회하면
+> "이미 같은 구성의 보드가 있습니다"로 자기 자신 때문에 거절된다.
+> `WHERE user_id = ? AND content_signature = ? AND id <> ?` 형태여야 한다.
+
+> 콘텐츠를 하나도 바꾸지 않고 복제하는 것은 막지 않는다. 타입별로 unique가 분리돼 있어
+> 원본과 충돌하지 않고, 사본은 `like_count = 0`이라 인기 보드 랭킹에 영향을 주지 않는다.
+
+### 9-3. 8건 고정 — 수정은 교체(swap)만 가능하다
+
+모든 보드가 콘텐츠 8건 고정이므로 추가/삭제는 성립하지 않는다. 현재 엔티티의 메서드는
+이 규칙과 맞지 않는다.
+
+```java
+// Board.java — 현재. 단독 호출하면 8건 규칙이 깨진다
+public void addContent(Content content)     // 호출하면 9건
+public void removeContent(Content content)  // 호출하면 7건
+```
+
+→ `replaceContents(List<Content>)` 하나로 받아 **8건 검증 + `slot_no` 부여 + signature 재계산**을
+함께 처리한다. API도 개별 추가/삭제가 아니라 8건 전체를 받는 형태가 규칙과 맞는다.
+
+```
+PUT /api/boards/{boardId}/contents
+{ "contentIds": [ 88, 12, 377, 45, 2038, 102, 891, 1204 ] }
+```
+
+**배열의 인덱스가 곧 `slot_no`다** (0번째 → slot 1). 순서 정보를 별도 필드로 받지 않는다.
+콘텐츠 교체와 순서 변경이 같은 API로 처리되므로, 프론트는 "무엇이 바뀌었는지" 판단할 필요 없이
+현재 화면 상태의 8건을 순서대로 보내면 된다. 어느 쪽이 바뀌었는지는 서버가 signature 비교로 안다.
+
+### 9-4. signature 재계산 책임은 엔티티에 둔다
+
+수정이 가능해지면서 `content_signature`가 더 이상 불변이 아니다. 갱신을 빠뜨리면
+**unique 제약과 인기 보드 중복 제거가 조용히 틀어진다.** 잘못된 값이 들어가도 즉시 에러가 나지
+않고 나중에 이상한 증상으로만 드러나므로, 방어를 엔티티 안에 둔다.
+
+`content_signature`는 `boardItems`에서 파생되는 값이다. 파생 관계를 엔티티가 보장하는 것이
+불변식(invariant) 관점에서 옳고, 서비스에 맡기면 호출을 빠뜨릴 여지가 생긴다.
+
+**`@PreUpdate`는 사용하지 않는다.** `boardItems`는 컬렉션이라 자식만 바뀌면 `Board` 엔티티
+자체가 dirty로 잡히지 않을 수 있다. 특히 `orphanRemoval`로 항목만 교체될 때 콜백이 타지 않는다.
+콘텐츠를 바꾸는 메서드(`replaceContents`) 안에서 직접 다시 계산하는 편이 확실하다.
+
+---
+
+## 10. 현재 코드와의 차이 (마이그레이션 대상)
+
+### 백엔드
+
+| 위치 | 현재 | 변경 |
+|---|---|---|
+| `entity/board/Board.java` | `user` 필드 주석이 서로 모순 ("PRE_MADE는 null 허용" vs "USER_CUSTOM만 null") | `visibility`, `content_signature` 추가. 소유 규칙을 CHECK 제약으로 이관 |
+| `entity/board/Board.java` | `addContent()` / `removeContent()` — 8건 규칙이 깨지는 경로 | `replaceContents(List<Content>)`로 대체. 8건 검증 + signature 재계산 (9-3, 9-4) |
+| 신규 | — | 보드 수정 API `PUT /api/boards/{boardId}/contents`. 원본 타입에 따라 in-place / 복제 분기 (9장) |
+| `enumData/BoardType.java` | `USER_CUSTOM, AI_RECOMMEND, PRE_MADE` | 그대로 (SEARCH 추가하지 않음) |
+| `repository/BoardRepository.java` | `findByDeletedAtIsNullOrderByLikeCountDesc` — 정렬 기준이 `like_count` 하나, `visibility` 필터 없음 | `visibility='PUBLIC'` 필터 + `ORDER BY like_count DESC, id ASC` + `LIMIT 16` |
+| `service/BoardService.java` | `likeNewBoard()`가 중복 검사 없이 무조건 `save()` | signature로 기존 보드 조회 후 있으면 좋아요만, 없으면 저장 |
+| `service/SearchService.java` | `BoardWithContentsDto.unsaved()` 하드코딩 — 항상 `boardId=null, likeCount=0, liked=false` | signature로 기존 보드 조회해 `boardId`·`likeCount`·`liked` 복원 |
+| `service/RecommendationService.java` | `List<ContentResponseDto>` 반환 | `BoardWithContentsDto` 반환 (제목·좋아요 상태 포함) |
+| `service/SearchService.buildTitle()` | `"'키워드' 검색 결과"` | 콘텐츠 평균 벡터 → 최근접 query |
+| `service/UserVectorService.java` | 벡터 없으면 예외 | `PRE_MADE` 폴백 |
+| `entity/board/BoardItem.java` | `slot_no` 없음 | 필드 추가 + 제약 (2장) |
+| `repository/BoardItemRepository.java` | `findContentIdsByBoardId(s)` — **`ORDER BY`가 없어 순서 미보장** | `ORDER BY bi.slotNo` 추가 |
+| `service/ContentService.getContents()` | `findContentsByIds`가 DB 순서로 돌려줘 **순서가 다시 뭉개짐** | `slot_no` 순으로 재정렬 (`RecommendationService.recommendByVector`와 같은 방식) |
+| `service/BoardService.getLikedBoards()` | 같은 문제 — 보드별 콘텐츠 순서가 뒤섞임 | 동일하게 재정렬 |
+| 신규 | — | 평균 벡터 계산 + `query_vector` 최근접 조회 |
+| 신규 | — | Flyway 마이그레이션 (컬럼 추가 → 백필 → 중복 정리 → 제약/인덱스) |
+
+### 프론트 (`/Users/kyj/dev/web/crates-frontend`)
+
+| 위치 | 변경 |
+|---|---|
+| `features/board/api/boardApi.ts` | `getRecommendedContents`가 `ContentSummary[]` → `BoardWithContents` |
+| `features/board/pages/HomePage.tsx` | `recommendedBoardId` 로컬 state 제거 (서버가 `boardId`를 내려줌) |
+| `shared/types/board.ts` | 이미 `boardId: number \| null` 반영 완료 |
+| `features/board/components/BoardCollage.tsx` | `SLOTS_8`이 이미 2행 4열이고 `contents[index] → slots[index]` 매핑이라, **서버가 `slot_no` 순으로 내려주면 수정 없이 동작**. `SLOTS_12`는 8건 고정이 확정됐으므로 제거 대상 |
+| 신규 | 순서 편집 UI (드래그앤드롭 등) + `PUT /api/boards/{id}/contents` 호출 |
+
+### 개발 단계 적용 방법
+
+현재 `ddl-auto: create`로 매 실행마다 스키마를 새로 만들고, Flyway는 비활성이다.
+(둘을 같이 켜면 마이그레이션이 최초 1회만 실행된 것으로 기록되고 이후 ddl-auto가 데이터를
+지워버린다 — `application.yaml` 주석 참고.)
+
+따라서 **기존 데이터 백필이나 중복 정리는 필요 없다.** 재실행하면 초기화된다.
+
+1. 엔티티에 필드 추가 (`Board.visibility`, `Board.contentSignature`, `BoardItem.slotNo`)
+   → Hibernate가 스키마를 만든다
+2. **JPA로 표현할 수 없는 제약은 `src/main/resources/import.sql`에 넣는다.**
+   이 파일은 Hibernate가 스키마 생성 직후 실행하며, 이미 같은 용도로 쓰이고 있다
+   (`board_feedback`의 `ON DELETE SET NULL` FK).
+   - 부분 유니크 인덱스: `uk_board_ai_signature`, `uk_board_user_signature`,
+     `uk_board_item_slot`, `uk_board_item_content`
+   - CHECK 제약: `ck_board_owner`, `ck_board_visibility`, `ck_board_item_slot`
+3. 애플리케이션 코드 교체
+
+> ⚠️ **`import.sql`의 실패는 조용하다.** Hibernate는 `hbm2ddl.halt_on_error`가 기본 false라
+> 구문 오류가 나도 로그만 남기고 기동을 계속한다. 제약이 안 걸린 채로 돌아가면 중복이 다시
+> 쌓이므로, 추가 후 실제로 적용됐는지 한 번은 확인해야 한다:
+> ```sql
+> SELECT indexname FROM pg_indexes WHERE tablename IN ('board','board_item');
+> ```
+
+> CHECK 제약만은 `org.hibernate.annotations.@Check`로 엔티티에 붙일 수도 있다. 다만 부분 유니크
+> 인덱스는 어차피 `import.sql`로 가야 하므로, 규칙이 두 곳에 흩어지지 않도록 한 파일에 모은다.
+
+### 운영 전환 시
+
+`ddl-auto: validate`로 바꾸고 위 DDL을 Flyway 마이그레이션으로 옮긴다. 그 시점에는 실데이터가
+있으므로 아래 순서가 필요해진다.
+
+1. 컬럼 추가 — nullable로
+2. 백필 — `content_signature`(정렬 계산), `visibility`(전부 PUBLIC),
+   `slot_no`(`row_number() over (partition by board_id order by id)`)
+3. 중복 정리 — 아래 쿼리로 확인 후, 좋아요를 대표 보드로 이관하고 나머지는 soft delete
+4. `NOT NULL` + CHECK 제약 + 인덱스 추가
+5. 애플리케이션 코드 교체
+
+3번을 건너뛰면 4번의 unique 인덱스 생성이 실패한다.
+
+```sql
+-- 중복 AI_RECOMMEND 보드
+SELECT content_signature, count(*) FROM board
+ WHERE board_type = 'AI_RECOMMEND' AND deleted_at IS NULL
+ GROUP BY content_signature HAVING count(*) > 1;
+
+-- 한 보드에 같은 콘텐츠가 두 번 들어간 경우
+SELECT board_id, content_id, count(*) FROM board_item
+ GROUP BY board_id, content_id HAVING count(*) > 1;
+```
+
+---
+
+## 11. 미결정 / 후속 검토
+
+- **PRIVATE 전환 시 남의 좋아요 처리.** `board_feedback` 레코드와 `like_count`는 보존하고
+  조회 시 `visibility` 필터만 거는 안을 제안한 상태.
+- **AI 서버 임베딩이 아직 스텁이다.** 실제 통신이 열리면 걷어낼 코드는
+  `memory/project_ai_stub_cleanup.md` 참고. 특히 Qdrant `content_vector` 컬렉션을
+  **삭제 후 재적재**해야 더미 벡터가 남지 않는다.
+- **HNSW 근사성으로 top-8이 흔들릴 수 있다.** 정렬로 순서 흔들림은 흡수하지만 8건 중
+  1건이 교체되면 새 보드가 생긴다. 빈도가 낮아 감수하되, 관측되면 대응을 검토한다.
