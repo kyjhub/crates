@@ -21,6 +21,7 @@ import com.crates.crates.repository.BoardRepository;
 import com.crates.crates.repository.ContentRepository;
 import com.crates.crates.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -52,6 +53,7 @@ public class BoardService {
     private final ContentRepository contentRepository;
     private final UserRepository userRepository;
     private final ContentService contentService;
+    private final ApplicationEventPublisher eventPublisher;
 
     public BoardWithContentsDto getBoardWithContents(Long boardId, Long userId)
     {
@@ -306,6 +308,7 @@ public class BoardService {
 
         saveFeedback(board, userId);
         boardRepository.incrementLikeCount(boardId);
+        publishLikeChanged(userId);
 
         return new BoardLikeResponse(boardId, currentLikeCount(boardId), true);
     }
@@ -323,6 +326,7 @@ public class BoardService {
         if (removed > 0)
         {
             boardRepository.decrementLikeCount(boardId);
+            publishLikeChanged(userId);
         }
 
         return new BoardLikeResponse(boardId, currentLikeCount(boardId), false);
@@ -397,6 +401,7 @@ public class BoardService {
         boardRepository.save(board);
 
         saveFeedback(board, userId);
+        publishLikeChanged(userId);
 
         return new BoardLikeResponse(board.getId(), board.getLikeCount(), true);
     }
@@ -503,6 +508,17 @@ public class BoardService {
         return contentIds.stream()
                 .map(contentById::get)
                 .toList();
+    }
+
+    /**
+     * 취향 벡터를 다시 계산하라고 알린다.
+     *
+     * <p>여기서 직접 계산하지 않는 이유는 두 가지다. Qdrant 왕복이 붙어 좋아요 응답이 느려지고,
+     * 벡터 계산이 실패하면 좋아요까지 롤백된다. 리스너가 커밋 이후에 비동기로 처리한다.</p>
+     */
+    private void publishLikeChanged(Long userId)
+    {
+        eventPublisher.publishEvent(new BoardLikeChangedEvent(userId));
     }
 
     private void saveFeedback(Board board, Long userId)

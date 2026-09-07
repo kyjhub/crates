@@ -11,6 +11,7 @@ import io.qdrant.client.grpc.Points;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -88,6 +89,47 @@ public class QdrantPointOperations {
             existingIds.add(pointId.getNum());
         }
         return existingIds;
+    }
+
+    /**
+     * point id로 벡터를 한 번에 가져온다.
+     *
+     * <p>사용자 취향 벡터를 다시 계산할 때 좋아요한 보드 전부의 콘텐츠 벡터가 필요하다.
+     * 보드마다 조회하면 왕복이 보드 수만큼 늘어나므로 id를 모아 한 번에 받는다.</p>
+     *
+     * <p>없는 id는 결과에 담기지 않는다. Qdrant에 아직 벡터가 없는 콘텐츠가 섞여 있을 수 있어
+     * 호출하는 쪽이 빠진 id를 감안해야 한다.</p>
+     */
+    public Map<Long, float[]> retrieveVectors(String collectionName, Collection<Long> ids) {
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+
+        List<Points.PointId> pointIds = ids.stream()
+                .distinct()
+                .map(PointIdFactory::id)
+                .toList();
+        List<Points.RetrievedPoint> points = await(
+                qdrantClient.retrieveAsync(collectionName, pointIds, false, true, null)
+        );
+
+        Map<Long, float[]> vectorById = new HashMap<>(points.size());
+        for (Points.RetrievedPoint point : points) {
+            Points.PointId pointId = point.getId();
+            if (pointId.getPointIdOptionsCase() != Points.PointId.PointIdOptionsCase.NUM) {
+                throw new IllegalStateException("Qdrant point id is not numeric.");
+            }
+            vectorById.put(pointId.getNum(), toFloatArray(point.getVectors().getVector().getDataList()));
+        }
+        return vectorById;
+    }
+
+    private float[] toFloatArray(List<Float> data) {
+        float[] vector = new float[data.size()];
+        for (int index = 0; index < data.size(); index++) {
+            vector[index] = data.get(index);
+        }
+        return vector;
     }
 
     // 단일 벡터를 Qdrant point 형식으로 변환해 저장한다.

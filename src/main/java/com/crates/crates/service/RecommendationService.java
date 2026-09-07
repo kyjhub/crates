@@ -72,20 +72,15 @@ public class RecommendationService {
         return RECOMMENDATION_TITLE + " " + (index + 1);
     }
 
-    /** 사용자 취향 벡터 기반 추천. */
+    /**
+     * 사용자 취향 벡터 기반 추천.
+     *
+     * <p>벡터가 비어 있는 경우를 따로 다루지 않는다. 가입 시점에 L2 정규화된 랜덤 벡터가 들어가고
+     * 좋아요가 생기면 그 집합에서 다시 계산되므로, 언제 조회하든 Cosine 검색에 쓸 수 있는 값이 있다.</p>
+     */
     public List<ContentResponseDto> recommend(Long userId, int topN)
     {
-        float[] userVector = userVectorService.getVector(userId);
-
-        if (UserVectorService.isUninitialized(userVector))
-        {
-            // 가입 직후에는 0 벡터다. Cosine 거리는 0 벡터에 대해 정의되지 않아, 그대로 Qdrant에
-            // 넣으면 오류가 나거나 의미 없는 결과가 돌아온다. 배치가 값을 채울 때까지 빈 보드를 준다.
-            log.info("취향 벡터가 아직 계산되지 않아 추천을 건너뜁니다. userId: {}", userId);
-            return List.of();
-        }
-
-        return recommendByVector(userVector, topN);
+        return recommendByVector(userVectorService.getVector(userId), topN);
     }
 
     /**

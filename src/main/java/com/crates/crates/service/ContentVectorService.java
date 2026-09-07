@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -59,6 +60,11 @@ public class ContentVectorService {
                 .toList();
 
         pointOperations.upsertPoints(collectionName, points);
+    }
+
+    /** 콘텐츠 id로 벡터를 한 번에 가져온다. Qdrant에 없는 id는 결과에서 빠진다. */
+    public Map<Long, float[]> findVectors(Collection<Long> contentIds) {
+        return pointOperations.retrieveVectors(collectionName, contentIds);
     }
 
     public List<Long> findSimilarContentIds(float[] targetVector, int topK) {
