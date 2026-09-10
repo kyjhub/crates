@@ -43,11 +43,20 @@ dependencies {
 	implementation 'io.minio:minio:8.5.7'
 
 	// Qdrant Java Client (벡터 DB 통신용)
-	implementation 'io.qdrant:client:1.8.0'
+	//
+	// 서버 버전과 반드시 함께 움직여야 한다(docker-compose.yml의 qdrant 이미지 태그).
+	// 1.8.0 클라이언트로 1.17 서버를 부르면 point 조회 응답을 파싱하지 못한다 —
+	// 조회 응답 타입이 Vectors/Vector에서 VectorsOutput/VectorOutput으로 갈라졌는데,
+	// 옛 클라이언트에는 그 타입 자체가 없어서 dense 데이터가 unknown field로 흘러가고
+	// 빈 배열이 돌아온다. 예외가 아니라 빈 값이라 조용히 잘못된 결과가 된다.
+	// (search는 id만 읽어서 멀쩡하고 retrieve만 깨지므로 더 늦게 발견된다.)
+	implementation 'io.qdrant:client:1.14.1'
 	// io.qdrant:client는 grpc-protobuf/guava를 runtime scope로만 선언해서
-	// QdrantPointOperations가 직접 참조하는 타입들이 컴파일 클래스패스에 올라오지 않음 → 명시적으로 추가
-	implementation 'com.google.protobuf:protobuf-java:3.24.0'   // grpc-protobuf 1.59.0과 동일 버전
-	implementation 'com.google.guava:guava:30.1-jre'            // io.qdrant:client가 요구하는 버전
+	// QdrantPointOperations가 직접 참조하는 타입들이 컴파일 클래스패스에 올라오지 않음 → 명시적으로 추가.
+	// 버전은 클라이언트가 끌어오는 grpc 1.65.1에 맞춘다.
+	implementation 'com.google.protobuf:protobuf-java:3.25.1'   // grpc-protobuf 1.65.1과 동일 버전
+	implementation 'com.google.guava:guava:32.1.3-jre'          // grpc가 요구하는 32.1.3의 JVM 판
+	implementation 'io.grpc:grpc-api:1.65.1'                    // QdrantConfig가 참조하는 ManagedChannel
 
 	// S3Client 클래스 import
 	implementation 'software.amazon.awssdk:s3:2.25.11' // SDK v2

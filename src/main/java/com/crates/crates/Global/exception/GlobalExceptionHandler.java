@@ -11,7 +11,9 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
+import java.util.Arrays;
 import java.util.Objects;
 
 @RestControllerAdvice
@@ -58,6 +60,28 @@ public class GlobalExceptionHandler {
                 .map(ConstraintViolation::getMessage)
                 .findFirst()
                 .orElse("요청 값이 올바르지 않습니다.");
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(new ApiResponse<>(false, null, message));
+    }
+
+    /**
+     * 쿼리 파라미터를 선언한 타입으로 바꾸지 못했을 때. {@code ?filter=FOO}, {@code ?page=abc} 같은 경우다.
+     *
+     * <p>잡지 않으면 아래 Exception 핸들러로 떨어져 500이 나간다. 위의 두 핸들러는 값을 <b>변환한 뒤</b>
+     * 검증하는 단계라 여기까지 오지 못한다 — 변환 자체가 실패하면 검증이 시작되지도 않는다.</p>
+     *
+     * <p>enum이면 가능한 값을 함께 알려준다. 프론트가 오타를 냈을 때 "형식이 올바르지 않습니다"만
+     * 받으면 어떤 값을 보내야 하는지 알 수 없다.</p>
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException e)
+    {
+        Class<?> requiredType = e.getRequiredType();
+        String message = requiredType != null && requiredType.isEnum()
+                ? "%s 값이 올바르지 않습니다. 가능한 값: %s"
+                        .formatted(e.getName(), Arrays.toString(requiredType.getEnumConstants()))
+                : "%s 값의 형식이 올바르지 않습니다.".formatted(e.getName());
 
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new ApiResponse<>(false, null, message));

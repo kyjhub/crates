@@ -6,12 +6,14 @@ import com.crates.crates.DTO.BoardLikeResponse;
 import com.crates.crates.DTO.BoardSaveRequest;
 import com.crates.crates.DTO.BoardWithContentsDto;
 import com.crates.crates.DTO.ContentResponseDto;
+import com.crates.crates.DTO.PageResponse;
 import com.crates.crates.Global.exception.BusinessException;
 import com.crates.crates.entity.board.Board;
 import com.crates.crates.entity.board.BoardFeedback;
 import com.crates.crates.entity.contents.Content;
 import com.crates.crates.entity.user.User;
 import com.crates.crates.enumData.BoardType;
+import com.crates.crates.enumData.MyBoardFilter;
 import com.crates.crates.enumData.Rating;
 import com.crates.crates.enumData.Visibility;
 import java.util.HashMap;
@@ -23,6 +25,7 @@ import com.crates.crates.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -228,17 +231,43 @@ public class BoardService {
     }
 
     /**
-     * "내 보드" — 내가 만든 보드와 내가 좋아요한 보드를 합쳐 좋아요 많은 순으로.
+     * 보관함 — 내 보드를 탭별로 한 페이지씩.
      *
      * <p>인기 보드와 달리 signature 중복 제거를 하지 않는다. 인기 목록은 남들에게 보여주는
      * 진열대라 같은 그림이 두 번 뜨면 안 되지만, 여기는 <b>내가 가진 것을 빠짐없이</b> 보여주는
      * 자리다. 좋아요한 보드와 그걸 고쳐 만든 내 보드는 서로 다른 보드이므로 둘 다 나와야 한다.</p>
+     *
+     * <p>홈의 "내 보드" 섹션도 이 메서드를 쓴다. 그 섹션이 보는 것은 전체 탭의 첫 페이지와
+     * 정확히 같아서(같은 필터, 같은 정렬) 조회 경로를 나눌 이유가 없다.</p>
      */
-    public List<BoardWithContentsDto> getMyBoards(int n, Long userId)
+    public PageResponse<BoardWithContentsDto> getMyBoards(MyBoardFilter filter, int page, int size, Long userId)
     {
-        List<Board> boards = boardRepository.findMyBoards(userId, Rating.LIKE, PageRequest.of(0, n));
+        // 한 건 더 가져와 초과분이 있는지로 hasNext를 판정한다. count 쿼리가 아예 필요 없다.
+        List<Board> fetched = findMyBoardsBy(filter, userId, PageRequest.of(page, size + 1));
 
-        return toResponses(boards, userId);
+        boolean hasNext = fetched.size() > size;
+        // 자르고 나서 toResponses를 부른다. 순서를 바꾸면 응답에 나가지도 않을 보드의
+        // 콘텐츠 8건을 헛되이 조립하게 된다.
+        List<Board> boards = hasNext ? fetched.subList(0, size) : fetched;
+
+        return new PageResponse<>(toResponses(boards, userId), page, size, hasNext);
+    }
+
+    /**
+     * 탭에 맞는 조회를 고른다.
+     *
+     * <p>쿼리 하나에 조건 분기를 넣지 않는 이유는 탭마다 <b>정렬 축이 다르기</b> 때문이다.
+     * 좋아요는 누른 시각, 만든 것은 생성 시각, 전체는 둘을 합친 값으로 정렬한다.
+     * WHERE만이라면 몰라도 ORDER BY까지 분기하면 JPQL 한 벌로는 읽을 수 없게 된다.</p>
+     */
+    private List<Board> findMyBoardsBy(MyBoardFilter filter, Long userId, Pageable pageable)
+    {
+        return switch (filter)
+        {
+            case ALL -> boardRepository.findMyBoards(userId, Rating.LIKE, pageable);
+            case LIKED -> boardFeedbackRepository.findLikedBoards(userId, Rating.LIKE, pageable);
+            case CREATED -> boardRepository.findCreatedByMe(userId, pageable);
+        };
     }
 
     /**

@@ -44,7 +44,10 @@ services:
 
   # Qdrant: AI 벡터 검색용 (취향 분석 & 유사도 추천)
   qdrant:
-    image: qdrant/qdrant:latest
+    # 태그를 고정한다. latest로 두면 서버만 조용히 올라가서 build.gradle의
+    # io.qdrant:client 버전과 어긋나고, 그 순간 point 조회가 빈 벡터를 돌려준다.
+    # 클라이언트를 올릴 때 이 태그도 같이 올릴 것.
+    image: qdrant/qdrant:v1.14.1
     container_name: qdrant_server
     ports:
       - "6333:6333"  # REST API 통신 및 웹 대시보드(UI) 접속용 포트
