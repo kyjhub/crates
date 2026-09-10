@@ -119,17 +119,30 @@ public class QdrantPointOperations {
             if (pointId.getPointIdOptionsCase() != Points.PointId.PointIdOptionsCase.NUM) {
                 throw new IllegalStateException("Qdrant point id is not numeric.");
             }
-            vectorById.put(pointId.getNum(), toFloatArray(point.getVectors().getVector().getDataList()));
+            vectorById.put(pointId.getNum(), toFloatArray(point.getVectors().getVector()));
         }
         return vectorById;
     }
 
-    private float[] toFloatArray(List<Float> data) {
-        float[] vector = new float[data.size()];
+    /**
+     * 조회 응답의 dense 벡터를 float 배열로 꺼낸다.
+     *
+     * <p>두 자리를 모두 본다. Qdrant는 조회 응답에서 dense 벡터를 {@code VectorOutput.dense}
+     * 하위 메시지에 담지만, 예전 서버는 최상위 {@code data}에 직접 담았고 그 필드도 아직 남아 있다.
+     * 어느 쪽이 채워질지는 서버 버전이 정하므로 호출부가 신경 쓰지 않도록 여기서 흡수한다.</p>
+     *
+     * <p>둘 다 비어 있으면 빈 배열이 나간다. 이때 예외를 던지지 않는 이유는 조회 대상 중 일부만
+     * 비어 있는 경우와 구분할 수 없어서다. 대신 쓰는 쪽(UserVectorService)이 기대 차원과 비교해
+     * 어긋나면 오류로 남긴다.</p>
+     */
+    private float[] toFloatArray(Points.VectorOutput vector) {
+        List<Float> data = vector.hasDense() ? vector.getDense().getDataList() : vector.getDataList();
+
+        float[] result = new float[data.size()];
         for (int index = 0; index < data.size(); index++) {
-            vector[index] = data.get(index);
+            result[index] = data.get(index);
         }
-        return vector;
+        return result;
     }
 
     // 단일 벡터를 Qdrant point 형식으로 변환해 저장한다.
