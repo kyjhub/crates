@@ -45,7 +45,7 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
                                                  @Param("signature") String signature);
 
     /**
-     * "내 보드" — 내가 만든 보드와 내가 좋아요한 보드를 합쳐서 좋아요 많은 순으로.
+     * "내 보드"(보관함 전체 탭) — 내가 만든 보드와 내가 좋아요한 보드를 합쳐 최근에 담은 순으로.
      *
      * <p>이 서비스에서 좋아요는 사실상 "내 크레이트에 담기"다. 추천·검색 보드는 좋아요를 누른
      * 시점에 저장되고, 그걸 고치면 내 USER_CUSTOM 보드가 된다. 두 경로로 모인 보드가 한 곳에
@@ -54,20 +54,53 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
      * <p>공개 여부는 걸지 않는다. 내 PRIVATE 보드는 나에게는 보여야 하고, 남의 PRIVATE 보드는
      * 애초에 좋아요할 수 없으니 여기 들어올 수 없다.</p>
      *
+     * <p><b>정렬이 좋아요 수가 아니라 "담은 시각"인 이유가 두 가지다.</b> 첫째, 좋아요 수 정렬은
+     * 인기 보드의 논리다. 내 보관함에서는 최근에 담은 것이 위에 와야 한다. 둘째, like_count는
+     * 다른 사용자들의 좋아요로 계속 변해서 페이징이 깨진다 — 2페이지를 불러오는 사이에 1페이지의
+     * 보드가 아래로 밀리면 같은 보드가 두 번 보이고 다른 보드는 건너뛰어진다. 과거 시각은 변하지
+     * 않으므로 무한 스크롤에서도 경계가 흔들리지 않는다.</p>
+     *
+     * <p>COALESCE는 "내 보관함에 들어온 시각"을 뜻한다. 좋아요한 보드면 좋아요를 누른 시각,
+     * 내가 만든 보드면 생성 시각이다. 둘 다인 보드는 좋아요 시각을 쓴다. 두 값 모두 항상
+     * 채워지므로(saveFeedback, newUserBoard, likeNewBoard, V4__SeedBoards) null이 새지 않는다.</p>
+     *
+     * <p>좋아요를 <b>LEFT JOIN</b>으로 바꾼 이유는 정렬 키(f.createdAt)를 꺼내야 해서다.
+     * EXISTS 서브쿼리로는 조건 판정만 되고 값을 가져올 수 없다. uk_board_feedback_board_user가
+     * (board_id, user_id) 유니크를 보장하므로 조인 결과는 보드당 최대 1행이고, 따라서 행이
+     * 불어나지 않아 DISTINCT가 필요 없다. (이 제약이 없었다면 페이징 개수가 통째로 틀어진다.)</p>
+     *
      * <p>소유자 조인을 <b>명시적 LEFT JOIN</b>으로 쓴다. b.user.id로 적으면 구현체에 따라
      * 암묵적 INNER JOIN이 되어, 소유자가 없는 전역 공용 보드(AI_RECOMMEND, PRE_MADE)가
      * 좋아요 조건을 만족해도 통째로 빠질 수 있다. 에러가 아니라 "일부가 안 보이는" 증상으로만
      * 드러나므로 애매하게 두지 않는다.</p>
      */
-    @Query("SELECT b FROM Board b LEFT JOIN b.user owner " +
+    @Query("SELECT b FROM Board b " +
+           "LEFT JOIN b.user owner " +
+           "LEFT JOIN BoardFeedback f ON f.board = b AND f.user.id = :userId AND f.rating = :rating " +
            "WHERE b.deletedAt IS NULL " +
-           "  AND (owner.id = :userId " +
-           "       OR EXISTS (SELECT 1 FROM BoardFeedback f " +
-           "                  WHERE f.board = b AND f.user.id = :userId AND f.rating = :rating)) " +
-           "ORDER BY b.likeCount DESC, b.id ASC")
+           "  AND (owner.id = :userId OR f.id IS NOT NULL) " +
+           "ORDER BY COALESCE(f.createdAt, b.createdAt) DESC, b.id DESC")
     List<Board> findMyBoards(@Param("userId") Long userId,
                              @Param("rating") Rating rating,
                              Pageable pageable);
+
+    /**
+     * 보관함 "만든 것" 탭 — 내가 만든 보드만.
+     *
+     * <p>ck_board_owner가 {@code (board_type = 'USER_CUSTOM') = (user_id IS NOT NULL)}을
+     * 강제하므로 두 조건 중 하나는 사실 잉여다. 그래도 둘 다 적는다. 소유자가 나인 것과
+     * 내가 만든 것이 같다는 사실은 제약을 알아야 보이는 것이라, 쿼리만 읽는 사람에게도
+     * 의도가 드러나야 한다.</p>
+     *
+     * <p>여기는 좋아요가 걸리지 않으므로 board.created_at 하나로 정렬이 끝난다.
+     * idx_board_owner (user_id, board_type)가 후보를 좁혀준다.</p>
+     */
+    @Query("SELECT b FROM Board b " +
+           "WHERE b.user.id = :userId " +
+           "  AND b.boardType = com.crates.crates.enumData.BoardType.USER_CUSTOM " +
+           "  AND b.deletedAt IS NULL " +
+           "ORDER BY b.createdAt DESC, b.id DESC")
+    List<Board> findCreatedByMe(@Param("userId") Long userId, Pageable pageable);
 
     /**
      * 이 사용자가 이미 같은 구성의 USER_CUSTOM 보드를 갖고 있는지.
