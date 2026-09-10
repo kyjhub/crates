@@ -187,6 +187,10 @@ public class UserVectorService {
 
         if (!anyBoardCounted)
         {
+            // 어느 보드도 벡터를 만들지 못했다. 조회 자체가 안 되는 것인지(0건) 일부만 비어 있는지를
+            // 숫자로 남긴다. 호출부의 경고만으로는 둘을 구분할 수 없어 원인 추적이 막힌다.
+            log.error("좋아요한 보드 {}건에서 콘텐츠 {}건을 조회했으나 쓸 수 있는 벡터가 {}건입니다.",
+                    weightByBoardId.size(), contentIds.size(), vectorByContentId.size());
             return null;
         }
 
@@ -243,12 +247,23 @@ public class UserVectorService {
 
         float[] sum = new float[vectorDimension];
         int counted = 0;
+        int mismatched = 0;
+        int sampleLength = 0;
+        Long sampleContentId = null;
 
         for (Long contentId : contentIds)
         {
             float[] vector = vectorByContentId.get(contentId);
-            if (vector == null || vector.length != vectorDimension)
+            if (vector == null)
             {
+                // Qdrant에 아직 벡터가 없는 콘텐츠. 정상적으로 생길 수 있는 상황이라 조용히 건너뛴다.
+                continue;
+            }
+            if (vector.length != vectorDimension)
+            {
+                mismatched++;
+                sampleLength = vector.length;
+                sampleContentId = contentId;
                 continue;
             }
             for (int index = 0; index < vectorDimension; index++)
@@ -256,6 +271,18 @@ public class UserVectorService {
                 sum[index] += vector[index];
             }
             counted++;
+        }
+
+        // 길이가 다른 것은 "아직 벡터가 없다"와 성격이 다르다. 설정이 어긋났거나(차원 불일치)
+        // Qdrant 응답을 읽지 못하고 있다는 뜻이라, 없는 것과 똑같이 건너뛰면 원인이 묻힌다.
+        // 실제로 클라이언트-서버 버전이 어긋나 빈 배열(length 0)이 돌아온 적이 있고,
+        // 그때 남은 단서가 아래 recalculateFor의 경고 한 줄뿐이라 원인을 찾기 어려웠다.
+        if (mismatched > 0)
+        {
+            log.error("콘텐츠 벡터의 차원이 기대와 다릅니다. {}건 / 기대: {} / 실제: {} (예: contentId {}). "
+                            + "실제가 0이면 Qdrant 응답을 파싱하지 못한 것이니 서버 이미지 태그와 "
+                            + "io.qdrant:client 버전이 맞는지 확인하세요.",
+                    mismatched, vectorDimension, sampleLength, sampleContentId);
         }
 
         if (counted == 0)
