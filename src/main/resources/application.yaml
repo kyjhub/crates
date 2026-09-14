@@ -74,6 +74,28 @@ spring:
 
 # reids, elasticSearch 아직 docker에 없어서 발생하는 에러 생략
 management:
+  # 기본값은 health만 열려 있어서 metrics를 명시해야 crates.user.vector.* 를 읽을 수 있다.
+  # SecurityConfig가 anyRequest().authenticated()라 actuator도 JWT가 필요하다.
+  # 외부에 열 때는 별도 포트나 인가 규칙을 먼저 정할 것.
+  endpoints:
+    web:
+      exposure:
+        include: health, metrics, prometheus
+  # Timer는 기본적으로 count/total/max만 보관한다. 꼬리 지연을 보려면 명시해야 한다.
+  # 평균은 병목을 숨긴다 — 평균 5ms에 p99가 400ms인 일이 흔하다.
+  #
+  # 지표 이름에 점이 들어 있어 반드시 대괄호로 감싸야 한다. 그냥 쓰면 YAML이 중첩 키로
+  # 해석해서 설정이 조용히 무시된다(에러가 아니라 무시라 알아채기 어렵다).
+  #
+  # percentiles는 이 인스턴스 안에서 계산된 값이다. 인스턴스가 여러 개가 되면 각자의 p95를
+  # 평균 내는 것이 의미가 없어지므로, 그때는 percentiles-histogram으로 버킷을 내보내고
+  # Prometheus가 histogram_quantile()로 합쳐야 한다.
+  metrics:
+    distribution:
+      percentiles:
+        "[http.server.requests]": 0.5, 0.95, 0.99          # 사용자가 겪는 응답 시간
+        "[crates.user.vector.recalculation]": 0.5, 0.95, 0.99  # 취향 벡터 재계산
+        "[hikaricp.connections.acquire]": 0.5, 0.95, 0.99  # 커넥션 획득 대기. 풀 포화의 선행 신호다
   health:
     redis:
       enabled: true
