@@ -4,6 +4,7 @@ FROM postgres:15
 # 2. 데이터베이스 서버의 시간대를 한국 시간(KST)으로 설정
 ENV TZ=Asia/Seoul
 
-# (선택) 3. 컨테이너가 처음 실행될 때 자동으로 테이블을 만들거나 초기 데이터를 넣고 싶다면,
-# 로컬에 있는 init.sql 파일을 도커의 특정 폴더로 복사해두면 알아서 실행해 줍니다.
-# COPY ./init.sql /docker-entrypoint-initdb.d/
+# 3. 첫 기동 시 1회 실행되는 초기화 스크립트. 지금은 pg_stat_statements 확장 생성용이다.
+#    데이터 디렉터리가 비어 있을 때만 돌기 때문에, 이미 만들어진 DB에는 적용되지 않는다.
+#    그때는 psql로 직접 CREATE EXTENSION 하면 된다.
+COPY ./init.sql /docker-entrypoint-initdb.d/

@@ -67,6 +67,20 @@ services:
       POSTGRES_USER: ${POSTGRESQL_USERNAME}                    # DB 접속 아이디
       POSTGRES_PASSWORD: ${POSTGRESQL_PASSWORD}     # DB 접속 비밀번호
       POSTGRES_DB: crates       # 처음 실행 시 자동으로 만들어질 데이터베이스 이름
+    # pg_stat_statements: 쿼리별 총 실행 시간·호출 횟수·읽은 버퍼를 누적한다.
+    # "p95가 4초"까지는 k6와 actuator가 알려주지만 "어느 쿼리 때문인지"는 이것만 답한다.
+    #
+    # shared_preload_libraries는 기동 시점에만 읽히는 값이라 런타임 변경이 안 된다.
+    # 그래서 여기(command)에 둔다. 이미 떠 있는 컨테이너에 적용할 때는 데이터를 지키기 위해
+    # 재생성 대신 ALTER SYSTEM SET + docker restart 를 쓴다(마운트가 익명 볼륨이라
+    # 재생성 시 데이터 보존이 보장되지 않는다).
+    #
+    # track은 기본값(top, 최상위 문장만)을 쓴다. all은 함수 안에서 실행된 쿼리까지 세는데
+    # 이 앱은 저장 프로시저를 쓰지 않아 결과가 같으면서 오버헤드만 는다.
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
 #    volumes:
 #      - ./postgres_data:/var/lib/postgresql/data # 데이터 영구 보존을 위한 바인드 마운트
     restart: unless-stopped
