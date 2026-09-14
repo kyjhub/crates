@@ -23,6 +23,30 @@ import java.util.concurrent.ExecutionException;
 @RequiredArgsConstructor
 public class QdrantPointOperations {
 
+    /**
+     * 한 번의 retrieve로 가져올 point 수.
+     *
+     * <p>gRPC 클라이언트의 기본 수신 한도가 4MB(4,194,304 byte)다. 768차원 float32 벡터는
+     * 전송 시 point당 약 2.8KB라, 1,400개쯤에서 이 한도를 넘는다. 실측(2026-09-14):</p>
+     *
+     * <pre>
+     *   1,200개 -> OK
+     *   1,360개 -> CANCELLED: Failed to read message
+     *   1,488개 -> RESOURCE_EXHAUSTED: gRPC message exceeds maximum size 4194304: 4232685
+     * </pre>
+     *
+     * <p>이 상한이 실제로 사용자를 막았다. 취향 벡터 재계산은 좋아요한 보드 전체의 콘텐츠
+     * 벡터를 가져오는데, 보드 하나당 콘텐츠가 8건이므로 <b>좋아요 170건을 넘긴 사용자부터
+     * 재계산이 통째로 실패</b>했다. 예외는 리스너의 catch에 걸려 로그로만 남고 응답은 200이라
+     * 겉으로는 멀쩡해 보인다. 좋아요를 많이 누른 사용자일수록 먼저 망가지는 종류의 결함이다.</p>
+     *
+     * <p>1,000으로 잡은 이유: 768차원 기준 약 2.8MB라 여유가 30% 남는다. 차원이 커지면
+     * point당 크기도 비례해 커지므로(1,536차원이면 두 배) 이 값을 함께 낮춰야 한다.
+     * 클라이언트의 maxInboundMessageSize를 올리는 방법도 있지만, 상한을 뒤로 미룰 뿐이고
+     * 사용자가 좋아요를 더 모으면 같은 자리에서 다시 터진다.</p>
+     */
+    private static final int RETRIEVE_CHUNK_SIZE = 1000;
+
     private final QdrantClient qdrantClient;
 
     /**
@@ -92,10 +116,12 @@ public class QdrantPointOperations {
     }
 
     /**
-     * point id로 벡터를 한 번에 가져온다.
+     * point id로 벡터를 가져온다.
      *
      * <p>사용자 취향 벡터를 다시 계산할 때 좋아요한 보드 전부의 콘텐츠 벡터가 필요하다.
-     * 보드마다 조회하면 왕복이 보드 수만큼 늘어나므로 id를 모아 한 번에 받는다.</p>
+     * 보드마다 조회하면 왕복이 보드 수만큼 늘어나므로 id를 모아서 받되,
+     * gRPC 수신 한도를 넘지 않도록 {@link #RETRIEVE_CHUNK_SIZE}개씩 나눠 요청한다.
+     * 왕복 횟수는 보드 수가 아니라 콘텐츠 수에 비례하며, 1,000개마다 한 번이다.</p>
      *
      * <p>없는 id는 결과에 담기지 않는다. Qdrant에 아직 벡터가 없는 콘텐츠가 섞여 있을 수 있어
      * 호출하는 쪽이 빠진 id를 감안해야 한다.</p>
@@ -109,19 +135,30 @@ public class QdrantPointOperations {
                 .distinct()
                 .map(PointIdFactory::id)
                 .toList();
+
+        Map<Long, float[]> vectorById = new HashMap<>(pointIds.size());
+        for (int from = 0; from < pointIds.size(); from += RETRIEVE_CHUNK_SIZE) {
+            int to = Math.min(from + RETRIEVE_CHUNK_SIZE, pointIds.size());
+            collectVectors(collectionName, pointIds.subList(from, to), vectorById);
+        }
+        return vectorById;
+    }
+
+    /** 한 번의 retrieve 결과를 누적 맵에 담는다. id가 중복되지 않으므로 덮어쓸 일이 없다. */
+    private void collectVectors(String collectionName,
+                                List<Points.PointId> chunk,
+                                Map<Long, float[]> into) {
         List<Points.RetrievedPoint> points = await(
-                qdrantClient.retrieveAsync(collectionName, pointIds, false, true, null)
+                qdrantClient.retrieveAsync(collectionName, chunk, false, true, null)
         );
 
-        Map<Long, float[]> vectorById = new HashMap<>(points.size());
         for (Points.RetrievedPoint point : points) {
             Points.PointId pointId = point.getId();
             if (pointId.getPointIdOptionsCase() != Points.PointId.PointIdOptionsCase.NUM) {
                 throw new IllegalStateException("Qdrant point id is not numeric.");
             }
-            vectorById.put(pointId.getNum(), toFloatArray(point.getVectors().getVector()));
+            into.put(pointId.getNum(), toFloatArray(point.getVectors().getVector()));
         }
-        return vectorById;
     }
 
     /**
