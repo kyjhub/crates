@@ -28,6 +28,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 public class UserVectorUpdateListener {
 
     private final UserVectorService userVectorService;
+    private final UserVectorMetrics metrics;
 
     @Async
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -43,6 +44,11 @@ public class UserVectorUpdateListener {
             // 좋아요는 이미 커밋됐다. 여기서 예외를 올려도 되돌릴 것이 없고, 사용자는 이미 응답을 받았다.
             // 재시도 장치를 두지 않는 이유는 재계산이 좋아요 집합 전체를 보기 때문이다 —
             // 이번에 실패해도 다음 좋아요 때 올바른 값으로 저절로 맞춰진다.
+            //
+            // 다만 실패가 조용히 묻히면 안 된다. 로그는 사람이 봐야 보이지만 지표는 남아서 쌓인다.
+            // 커밋 단계에서 터진 예외는 여기까지 오지 않으므로(UserVectorMetrics.recordFailure 참고)
+            // 이 카운터가 0이라고 해서 정상이라는 뜻은 아니다. stale.users 게이지와 함께 봐야 한다.
+            metrics.recordFailure();
             log.error("취향 벡터 재계산에 실패했습니다. userId: {}", event.userId(), e);
         }
     }

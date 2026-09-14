@@ -1,0 +1,12 @@
+-- 데이터 디렉터리가 비어 있을 때(첫 기동) 한 번만 실행된다.
+--
+-- pg_stat_statements: 쿼리별 총 실행 시간·호출 횟수·읽은 버퍼를 누적한다.
+-- "어느 쿼리가 시간을 먹는가"에 답하는 유일한 도구다(k6는 사용자 응답만, actuator는 앱 내부만 본다).
+--
+-- 라이브러리 적재(shared_preload_libraries)는 docker-compose.yml의 command에 있고,
+-- 확장 생성은 여기에 있다. 둘 다 있어야 동작한다.
+--
+-- Flyway 마이그레이션에 두지 않은 이유: 이건 앱 스키마가 아니라 DB 관측 설비다.
+-- 앱이 이 확장에 의존하지 않으므로 마이그레이션이 실패할 이유를 하나 늘릴 필요가 없다.
+-- (pg_trgm은 V6의 인덱스가 직접 의존하므로 마이그레이션에 있는 것이 맞다.)
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;

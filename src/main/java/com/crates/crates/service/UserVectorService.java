@@ -10,6 +10,7 @@ import com.crates.crates.enumData.Rating;
 import com.crates.crates.repository.BoardFeedbackRepository;
 import com.crates.crates.repository.BoardItemRepository;
 import com.crates.crates.repository.UserVectorRepository;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -57,6 +58,7 @@ public class UserVectorService {
     private final BoardFeedbackRepository boardFeedbackRepository;
     private final BoardItemRepository boardItemRepository;
     private final ContentVectorService contentVectorService;
+    private final UserVectorMetrics metrics;
 
     @Value("${ai.server.embedding-dimension}")
     private int vectorDimension;
@@ -116,13 +118,18 @@ public class UserVectorService {
     @Transactional
     public void recalculateFor(Long userId)
     {
+        Timer.Sample sample = metrics.startRecalculation();
+
         List<LikedBoardDto> liked = boardFeedbackRepository.findLikedBoardsWithTime(userId, Rating.LIKE);
+        // 비용이 이 값에 비례하므로 소요 시간과 함께 봐야 해석이 된다.
+        metrics.recordLikedBoards(liked.size());
 
         UserVector stored = userVectorRepository.findById(userId).orElse(null);
         if (stored == null)
         {
             // 가입 시 만들어지므로 정상 흐름에서는 오지 않는다. 없으면 계산할 근거도 없다.
             log.warn("취향 벡터 행이 없어 재계산을 건너뜁니다. userId: {}", userId);
+            metrics.recordRecalculation(sample, UserVectorMetrics.Result.SKIPPED);
             return;
         }
 
@@ -134,10 +141,12 @@ public class UserVectorService {
         if (recalculated == null)
         {
             log.warn("좋아요한 보드의 콘텐츠 벡터를 찾지 못해 취향 벡터를 유지합니다. userId: {}", userId);
+            metrics.recordRecalculation(sample, UserVectorMetrics.Result.UNCHANGED);
             return;
         }
 
         stored.updateVector(recalculated, LocalDateTime.now());
+        metrics.recordRecalculation(sample, UserVectorMetrics.Result.UPDATED);
     }
 
     /**
