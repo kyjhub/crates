@@ -18,6 +18,8 @@ public interface BoardFeedbackRepository extends JpaRepository<BoardFeedback, Lo
 
     boolean existsByBoardIdAndUserIdAndRating(Long boardId, Long userId, Rating rating);
 
+    boolean existsByUserIdAndRating(Long userId, Rating rating);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("DELETE FROM BoardFeedback f WHERE f.board.id = :boardId AND f.user.id = :userId AND f.rating = :rating")
     int deleteFeedback(@Param("boardId") Long boardId,

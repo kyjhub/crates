@@ -80,7 +80,7 @@ public class RecommendationService {
      */
     public List<ContentResponseDto> recommend(Long userId, int topN)
     {
-        return recommendByVector(userVectorService.getVector(userId), topN);
+        return recommendByVector(userVectorService.resolveVector(userId), topN);
     }
 
     /**

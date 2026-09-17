@@ -16,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -31,13 +32,14 @@ import java.util.stream.Collectors;
 /**
  * 사용자 취향 벡터.
  *
- * <p>좋아요한 보드들의 콘텐츠 벡터에서 <b>매번 다시 계산</b>한다. 누적 갱신(증분)을 쓰지 않는
+ * <p>좋아요가 바뀌면 좋아요한 보드들의 콘텐츠 벡터에서 <b>매번 다시 계산</b>한다. 누적 갱신(증분)을 쓰지 않는
  * 이유는 좋아요 취소 때문이다. 증분 방식에서는 취소된 항의 기여를 되돌리는 역연산이 필요한데,
  * float32에서 더하고 빼기를 반복하면 오차가 쌓이고 마지막 좋아요를 취소하면 0으로 나누게 된다.
  * 재계산은 그 항을 빼고 다시 평균 내면 끝이라 취소가 특별한 경우가 아니게 된다.</p>
  *
  * <p>"첫 좋아요인지" 판별하는 로직도 필요 없다. 초기 랜덤 벡터는 애초에 평균에 들어가지 않고,
- * 좋아요 집합이 비었을 때만 쓰인다.</p>
+ * 좋아요 집합이 비었을 때만 쓰인다. 좋아요가 없는 사용자는 추천 조회 시 시작 벡터를
+ * 하루에 한 번 갱신한다.</p>
  */
 @Slf4j
 @Service
@@ -79,6 +81,50 @@ public class UserVectorService {
         return userVectorRepository.findById(userId)
                 .map(UserVector::getUserVector)
                 .orElseThrow(() -> new BusinessException("사용자 벡터가 존재하지 않습니다. userId: " + userId));
+    }
+
+    /**
+     * 추천에 쓸 벡터. 좋아요가 없는 사용자의 시작 벡터는 하루에 한 번 새로 만든다.
+     * 매일 같은 추천 보드를 보지 않도록 하되, 좋아요 기반 취향 벡터는 그대로 유지한다.
+     */
+    @Transactional
+    public float[] resolveVector(Long userId)
+    {
+        UserVector stored = userVectorRepository.findById(userId)
+                .orElseThrow(() -> new BusinessException("사용자 벡터가 존재하지 않습니다. userId: " + userId));
+
+        // 날짜 비교, seed, 저장 시각이 자정을 사이에 두고 서로 다른 날을 가리키지 않도록 한 번만 읽는다.
+        LocalDateTime now = LocalDateTime.now();
+        LocalDate today = now.toLocalDate();
+        if (stored.getUpdatedAt().toLocalDate().equals(today))
+        {
+            return stored.getUserVector();
+        }
+        if (boardFeedbackRepository.existsByUserIdAndRating(userId, Rating.LIKE))
+        {
+            return stored.getUserVector();
+        }
+
+        float[] fresh = initialVectorOf(userId, today);
+
+        // 이 메서드에서 쓰기가 일어나는 지점은 여기뿐이다.
+        //
+        // 읽기 전용 트랜잭션에 합류한 상태라면(예: 호출부에 @Transactional(readOnly = true)가 붙으면)
+        // Hibernate가 FlushMode.MANUAL이라 더티 체킹이 플러시되지 않는다. 예외도 없고 요청도
+        // 성공하는데 벡터만 그대로다. 이 프로젝트가 Qdrant 버전 불일치와 gRPC 한도에서 두 번 겪은
+        // "조용히 잘못된 값이 흐르는" 유형이라, 침묵하느니 여기서 멈춘다.
+        //
+        // 위의 두 조기 반환은 쓰기가 없어 읽기 전용이어도 정상이므로 검사하지 않는다.
+        // 지킬 것이 있는 지점에서만 단언한다.
+        if (TransactionSynchronizationManager.isCurrentTransactionReadOnly())
+        {
+            throw new IllegalStateException(
+                    "시작 벡터를 저장해야 하는데 현재 트랜잭션이 읽기 전용입니다. "
+                            + "호출 경로에 @Transactional(readOnly = true)가 있는지 확인하세요. userId: " + userId);
+        }
+
+        stored.updateVector(fresh, now);
+        return fresh;
     }
 
     /**
@@ -343,6 +389,9 @@ public class UserVectorService {
      * <p>seed에 <b>날짜</b>를 섞는다. 사용자 id만 쓰면 가입 시점과 좋아요를 전부 취소한 시점의
      * 벡터가 같아지고, 좋아요가 없는 사용자는 "오늘의 추천 보드"에서 매일 같은 4개를 보게 된다.
      * 날짜가 들어가면 하루마다 다른 시작점을 받는다.</p>
+     *
+     * <p>가입 이후 날짜가 반영되는 시점은 좋아요를 전부 취소할 때({@link #recalculateFor})와,
+     * 좋아요가 없는 사용자가 추천을 조회할 때({@link #resolveVector})다.</p>
      *
      * <p>시각이 아니라 날짜인 것이 중요하다. 재계산은 비동기라 연타하면 여러 번 돌 수 있는데,
      * 초 단위로 섞으면 호출마다 다른 값이 나와 "재계산은 언제 돌려도 같은 결과"라는 성질이 깨진다.
