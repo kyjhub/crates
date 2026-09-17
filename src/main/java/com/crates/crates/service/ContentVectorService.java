@@ -62,7 +62,10 @@ public class ContentVectorService {
         pointOperations.upsertPoints(collectionName, points);
     }
 
-    /** 콘텐츠 id로 벡터를 한 번에 가져온다. Qdrant에 없는 id는 결과에서 빠진다. */
+    /**
+     * 콘텐츠 id로 벡터를 가져온다. id마다 따로 묻지 않고 모아서 넘기되, gRPC 수신 한도 때문에
+     * 내부에서 1,000개씩 나눠 요청한다(QdrantPointOperations 참고). Qdrant에 없는 id는 결과에서 빠진다.
+     */
     public Map<Long, float[]> findVectors(Collection<Long> contentIds) {
         return pointOperations.retrieveVectors(collectionName, contentIds);
     }
