@@ -96,7 +96,7 @@ FROM pg_stat_user_tables ORDER BY seq_tup_read DESC LIMIT 10;
 
 **비교 측정 전에는 반드시 지울 것.** 좋아요 이력이 계정에 누적되고 재계산 비용이 O(이력)이라,
 계정을 재사용하면 출발점이 달라져 비교가 성립하지 않는다. 실제로 이것 때문에 개선을 퇴행으로
-잘못 읽은 적이 있다(docs 4-7).
+잘못 읽은 적이 있다(docs 4-9).
 
 ```bash
 set -a && . ./crates_server.env && set +a
