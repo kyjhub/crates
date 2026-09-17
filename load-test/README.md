@@ -17,13 +17,23 @@ k6가 재는 건 ①뿐이다. DB 시간은 그 숫자 **안에 섞여** 있을 
 
 ## 전제
 
-- 앱이 `localhost:8080`에 떠 있을 것
-- `crates_server.env`가 저장소 루트에 있을 것 (DB 관측에 쓴다)
-- `k6` 설치 (`brew install k6`)
+`k6` 설치(`brew install k6`)와 `crates_server.env`가 저장소 루트에 있을 것.
 
-> **부하테스트는 빌드한 jar로 띄우고 재는 편이 낫다.** `./gradlew bootRun`은
-> `spring-boot-devtools`가 활성화돼 재시작 클래스로더가 끼어 있어 운영과 다른 JVM이다.
-> `bootJar`는 devtools를 제외한다.
+**앱은 컨테이너로 띄운다.** 자원 상한(`cpus: '4'`, `memory: 3g`)이 걸려야 수치가 재현된다.
+
+```bash
+docker compose --env-file crates_server.env down -v
+docker compose --env-file crates_server.env up -d --build
+```
+
+기동에 4~5분 걸린다(콘텐츠 19만 건 시딩 + 이미지 업로드 + Qdrant 적재).
+`docker compose ps`로 `backend_server`가 뜬 것을 확인하고 시작한다.
+
+> `--build`를 붙이는 이유: `postgres/init.sql`(pg_stat_statements 생성)이 이미지에 구워져 있어,
+> 캐시된 이미지를 쓰면 확장이 안 만들어진다.
+
+> `./gradlew bootRun`으로 띄우고 재지 말 것. `spring-boot-devtools`가 활성화돼
+> 재시작 클래스로더가 끼고, 자원 상한도 없어서 **수치가 재현되지 않는다.**
 
 ## 실행
 
@@ -84,14 +94,26 @@ FROM pg_stat_user_tables ORDER BY seq_tup_read DESC LIMIT 10;
 테스트는 실제 API로 데이터를 만든다. 정합성은 맞지만 전부 난수 조합이라, 남겨두면 인기 보드
 후보에 섞이고 이후 측정치를 오염시킨다.
 
+**비교 측정 전에는 반드시 지울 것.** 좋아요 이력이 계정에 누적되고 재계산 비용이 O(이력)이라,
+계정을 재사용하면 출발점이 달라져 비교가 성립하지 않는다. 실제로 이것 때문에 개선을 퇴행으로
+잘못 읽은 적이 있다(docs 4-7).
+
 ```bash
 set -a && . ./crates_server.env && set +a
 docker exec -i -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server \
   psql -U $POSTGRESQL_USERNAME -d crates -f - < load-test/cleanup.sql
 ```
 
-## 지금 수치의 한계
+## 기준선과 한계
 
-부하 생성기가 서버와 **같은 노트북**에 있고 자원 상한도 없다.
-**절대 TPS는 쓸 수 없고**, 같은 조건의 상대 비교와 추세만 유효하다.
-절대값이 필요해지면 앱을 compose에 올려 CPU·메모리를 제한하고, 생성기를 다른 기계로 빼야 한다.
+```
+backend 4 vCPU / 3GB, k6 VU 20, 좋아요 400건
+  97 TPS   p95 221ms   p99 272ms   실패 0        (2026-09-15)
+```
+
+비교할 때 **같은 조건인지 먼저 확인할 것.** VU 수, 반복 수, board 테이블 크기, 1인당 좋아요
+이력이 전부 결과를 바꾼다.
+
+자원 상한이 생겨서 **같은 설정이면 같은 값이 나온다.** 다만 이것이 "운영에서 기대할 수치"는
+아니다 — **부하 생성기가 여전히 같은 기계**에 있다. 그게 남은 가장 큰 오염이고, 컨테이너화로는
+해결되지 않는다. 자세한 것은 [docs 2장](../docs/load-test-and-metrics.md).

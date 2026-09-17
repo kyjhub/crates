@@ -24,7 +24,7 @@ DELETE FROM board_feedback
 DELETE FROM board_item WHERE board_id IN (SELECT id FROM loadtest_boards);
 DELETE FROM board      WHERE id       IN (SELECT id FROM loadtest_boards);
 DELETE FROM user_vector WHERE user_id IN (SELECT id FROM loadtest_users);
-DELETE FROM user_refresh_token WHERE user_id IN (SELECT id FROM loadtest_users);
+DELETE FROM user_refresh_tokens WHERE user_id IN (SELECT id FROM loadtest_users);
 DELETE FROM users WHERE id IN (SELECT id FROM loadtest_users);
 
 -- 지운 뒤 남은 것이 초기 상태(시딩 보드 10건)인지 확인용
