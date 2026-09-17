@@ -138,6 +138,22 @@ PostgreSQL이 제네릭 플랜을 쓰면 `board_type = $1`이 `= 'AI_RECOMMEND'`
 |---|---|---:|---:|
 | 리터럴 | `Index Scan using uk_board_ai_signature` | 2 | 0.012ms |
 | 바인드 + 제네릭 플랜 | **`Seq Scan`** (3,128행 필터) | 74 | 0.607ms |
+| **바인드 + `auto`(기본값, 앱이 실제로 쓰는 것)** | **`Index Scan using uk_board_ai_signature`** | **3** | — |
+
+> **이 표의 앞 두 줄은 사실이고, 세 번째 줄이 빠져 있었다.** 그래서 "제네릭 플랜이니까 앱에서도
+> Seq Scan이 난다"고 추론했는데 틀렸다. `plan_cache_mode`의 기본값은 `auto`이고,
+> auto는 제네릭 플랜의 추정 비용이 커스텀보다 싸지 않으면 **계속 커스텀을 쓴다.**
+>
+> ```
+> 커스텀(auto)      Index Scan using uk_board_ai_signature   cost 8.29    buffers 3
+> 강제 제네릭        Seq Scan (Rows Removed by Filter: 3127)  cost 69.92   buffers 23
+> ```
+>
+> 제네릭이 8배 비싸므로 PostgreSQL은 전환하지 않는다. 같은 prepared statement를 30회 실행해
+> 확인했다 — `uk_board_ai_signature` 30회, `seq_scan` 0회. **한 번도 제네릭으로 넘어가지 않는다.**
+>
+> 즉 `force_generic_plan`으로 재현한 것은 **PostgreSQL이 스스로 회피하는 상태**였다.
+> 측정은 정확했고 추론이 틀렸다(4-7).
 
 보드 수에 비례해 나빠진다. **통제 실험** — 동일 조건(좋아요 100건 / 워커 20)에서
 `board` 테이블만 620행 → 3,128행으로 커졌을 때:
