@@ -153,7 +153,9 @@ public class UserVectorService {
         List<BoardContentIdDto> pairs =
                 boardItemRepository.findContentIdsByBoardIds(List.copyOf(weightByBoardId.keySet()));
 
-        // 보드 수와 무관하게 Qdrant 왕복은 한 번이다.
+        // 보드마다 조회하지 않고 콘텐츠 id를 전부 모아 한 번에 넘긴다. 왕복 횟수는 보드 수가
+        // 아니라 콘텐츠 수에 비례하며, gRPC 수신 한도 때문에 1,000개마다 한 번씩 나간다
+        // (QdrantPointOperations.RETRIEVE_CHUNK_SIZE). 보드 125개까지는 왕복 한 번이다.
         Set<Long> contentIds = pairs.stream()
                 .map(BoardContentIdDto::contentId)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
