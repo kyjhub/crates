@@ -39,7 +39,7 @@ public class UserVector {
     }
 
     /**
-     * 취향 벡터 갱신. 좋아요 집합 전체에서 다시 계산한 값으로 통째로 바꾼다.
+     * 취향 벡터 갱신. 좋아요 집합 전체에서 다시 계산한 값이나 오늘의 시작 벡터로 통째로 바꾼다.
      * 증분 누적이 아니라 재계산이므로 이전 값과의 연속성을 신경 쓸 필요가 없다.
      */
     public void updateVector(float[] userVector, LocalDateTime updatedAt) {
