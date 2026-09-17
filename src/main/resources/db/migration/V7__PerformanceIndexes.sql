@@ -69,9 +69,25 @@ CREATE INDEX idx_feedback_user_recent
 --
 -- deleted_at IS NULL은 술어로 남겨도 된다. 쿼리에 상수로 박혀 있어 플래너가 증명할 수 있다.
 --
--- board_type을 선두에 두는 이유: USER_CUSTOM 경로(findActiveUserBoardBySignature)도
--- 같은 두 컬럼을 조건으로 쓰므로 하나의 인덱스가 두 조회를 모두 덮는다.
+-- 컬럼이 셋인 이유: 이 인덱스가 덮어야 하는 조회가 둘인데 조건 집합이 다르다.
+--
+--   findActiveByTypeAndSignature      board_type + content_signature
+--   findActiveUserBoardBySignature    board_type + content_signature + user_id
+--
+-- USER_CUSTOM은 사용자가 다르면 같은 content_signature를 가질 수 있다(uk_board_user_signature가
+-- (user_id, content_signature)로 유일성을 보장하므로 signature 단독으로는 중복이 허용된다).
+-- 그리고 실제로 몰리는 경로가 있다 — updateBoard에서 남의 보드를 제목만 바꿔 저장하면
+-- 콘텐츠가 그대로라 signature가 같은 채로 복제된다. 인기 보드를 N명이 제목만 바꿔 담으면
+-- (USER_CUSTOM, 같은 signature) 행이 N개 쌓인다.
+--
+-- user_id가 인덱스에 없으면 그 N행을 전부 훑고 Filter로 걸러낸다. 실측(같은 signature 3,000행):
+--
+--   (board_type, content_signature)            Rows Removed by Filter: 2999   buffers 32   0.180ms
+--   (board_type, content_signature, user_id)   Index Cond에 3컬럼 전부        buffers  4   0.020ms
+--
+-- board_type을 선두에 두면 앞 두 컬럼이 findActiveByTypeAndSignature의 접두사가 되어
+-- AI_RECOMMEND 경로도 같은 인덱스로 해결된다. 인덱스 크기는 103,000행 기준 4.0MB -> 4.9MB다.
 
 CREATE INDEX idx_board_signature_lookup
-    ON board (board_type, content_signature)
+    ON board (board_type, content_signature, user_id)
     WHERE deleted_at IS NULL;
