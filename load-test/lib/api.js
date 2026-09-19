@@ -86,6 +86,26 @@ export function likeBoard(token, boardId) {
   });
 }
 
+/** 좋아요 취소. 좋아요 이력을 0으로 되돌려야 하는 시나리오(board-growth)에서 쓴다. */
+export function unlikeBoard(token, boardId) {
+  return http.del(`${BASE}/api/boards/${boardId}/likes`, null, {
+    ...auth(token),
+    tags: { name: 'DELETE /api/boards/{id}/likes' },
+  });
+}
+
+/** 내 보관함에서 boardId 목록만. 미리 만들어둔 보드 풀을 집어올 때 쓴다(like-history). */
+export function myBoardIds(token, size) {
+  const res = http.get(`${BASE}/api/boards/mine?filter=ALL&page=0&size=${size}`, {
+    ...auth(token),
+    tags: { name: 'GET /api/boards/mine' },
+  });
+  if (res.status !== 200) {
+    throw new Error(`보관함 조회 실패: ${res.status} ${String(res.body).slice(0, 200)}`);
+  }
+  return res.json('data.content').map((b) => b.boardId).filter((id) => id !== null);
+}
+
 /** 오늘의 추천 보드. resolveGeneratedBoard를 4번 부르므로 signature 조회가 4회 일어난다. */
 export function recommendation(token) {
   return http.get(`${BASE}/api/boards/recommendation/user`, {

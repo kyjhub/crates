@@ -38,15 +38,54 @@ docker compose --env-file crates_server.env up -d --build
 ## 실행
 
 ```bash
-# 보드를 늘려가며 처리량이 유지되는지 (V7 인덱스 검증)
-./load-test/run-signature-curve.sh 5
-
-# 시나리오 단독 실행
-USERS=20 ITERATIONS=600 k6 run load-test/scenarios/board-signature.js
+./load-test/run-measure.sh <시나리오> [측정횟수]
 ```
 
-환경변수: `USERS`(기본 20), `ITERATIONS`(기본 100), `BASE_URL`, `MAX_CONTENT_ID`(기본 191239).
-`MAX_CONTENT_ID`는 시딩 결과가 바뀌면 함께 바꿔야 한다.
+스크립트가 **준비 확인 → 워밍업 1회(버림) → 측정 N회 → 중앙값**을 한다.
+
+| 시나리오 | 바뀌는 변수 | 쓸 곳 |
+|---|---|---|
+| `like-new-board` | board 행 수 **와** 좋아요 이력 (둘 다) | 코드 변경 전후 정상 상태 처리율 비교 |
+| `board-growth` | **board 행 수만** (좋아요 후 즉시 취소) | 보드가 많아질 때 조회·INSERT 경로 |
+| `like-history` | **좋아요 이력만** (미리 만든 보드 풀에 좋아요) | 재계산이 O(이력)인 것의 영향 |
+
+```bash
+# 기본: 코드 변경 전후 비교
+USERS=20 ITERATIONS=600 ./load-test/run-measure.sh like-new-board 3
+
+# board가 누적되는 효과 (--keep으로 매 실행 cleanup을 건너뛴다)
+USERS=20 ITERATIONS=600 ./load-test/run-measure.sh board-growth 5 --keep
+
+# 이력이 쌓일 때 재계산 비용 — 실행 후 앱 지표를 함께 볼 것
+USERS=10 ITERATIONS=600 POOL=100 ./load-test/run-measure.sh like-history 3
+```
+
+환경변수: `USERS`, `ITERATIONS`, `POOL`(like-history), `BASE_URL`, `MAX_CONTENT_ID`(기본 191239).
+
+### 왜 이런 모양인가
+
+**워밍업** — 첫 실행은 정상 상태보다 **50% 느리다.** JVM JIT 때문이고 DB를 비워도 안 풀린다.
+같은 조건 7회 반복 실측:
+
+```
+1회 104.0/s   2회 154.9   3회 173.2   4회 197.2   5회 197.3   6회 206.7   7회 209.7
+```
+
+4회차부터 수렴한다. **앱을 재시작하면 다시 식는다**(재시작 직후 113.3).
+
+**반복과 중앙값** — 정상 상태에서도 실행 간 ±6%가 흔들린다. 1회 측정으로는 아무것도 말할 수
+없다. 스크립트가 퍼짐을 함께 출력하니, **두 설정의 차이가 퍼짐보다 작으면 유의하지 않다.**
+
+**변수 분리** — `like-new-board`는 board와 이력을 동시에 늘린다. "규모가 커지면 무엇이
+느려지나"를 이걸로 물으면 답할 수 없다. `board-growth` / `like-history`를 쓸 것.
+
+**처리율은 `iterations.rate`** — `http_reqs`에는 `setup()`의 회원가입·로그인이 섞여 약 10%
+부풀려진다(실측 134.6 vs 122.4).
+
+**준비 확인** — `/actuator/health` 응답은 측정 준비 완료가 **아니다.** Spring Boot는
+`ApplicationRunner`를 "Started" 로그 이후에 돌리고, `seed completed` 이후에도 Qdrant가
+HNSW를 백그라운드로 짓는다(실측 35초, CPU 815%). 스크립트가 Qdrant CPU가 20% 아래로
+떨어질 때까지 기다린다.
 
 ## 읽는 법
 
@@ -107,9 +146,11 @@ docker exec -i -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server \
 ## 기준선과 한계
 
 ```
-backend 4 vCPU / 3GB, k6 VU 20, 좋아요 400건
-  97 TPS   p95 221ms   p99 272ms   실패 0        (2026-09-15)
+backend 4 vCPU / 3GB, VU 20, like-new-board 600회, 워밍업 후 3회 중앙값
+  183.2 /s   p95 132ms   퍼짐 5%        (2026-09-19)
 ```
+
+> 2026-09-19 이전 수치(97 TPS 등)는 워밍업 없이 1회 측정한 것이라 이 값과 비교할 수 없다.
 
 비교할 때 **같은 조건인지 먼저 확인할 것.** VU 수, 반복 수, board 테이블 크기, 1인당 좋아요
 이력이 전부 결과를 바꾼다.
