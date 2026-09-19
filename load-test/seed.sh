@@ -42,6 +42,36 @@ if [ "$($PSQL1 "SELECT count(*) FROM users WHERE login_id='loadtest_seed'")" = "
 fi
 
 echo "준비: 계정 ${USERS}개 / 보드 ${BOARDS}개 / 계정당 좋아요 ${LIKES}건"
-$PSQL -q -v users="$USERS" -v boards="$BOARDS" -v likes="$LIKES" < load-test/seed.sql
+read -r n_users n_boards n_likes per_user liked_boards b1 b2 b3 b4 b5 <<<"$(
+    $PSQL -q -t -A -F' ' -v users="$USERS" -v boards="$BOARDS" -v likes="$LIKES" < load-test/seed.sql
+)"
+
+printf '  계정 %s / 보드 %s / 좋아요 %s (인당 %s)\n' "$n_users" "$n_boards" "$n_likes" "$per_user"
+
+# ── 분포 검증 ──────────────────────────────────────────────
+# 좋아요가 앞쪽 보드에만 몰리면 조인 비용이 실제보다 작게 나온다. 실측에서 몰렸을 때
+# 58버퍼, 전 구간에 흩어졌을 때 480버퍼로 8배 차이가 났다. 측정기가 결과를 왜곡하는
+# 종류라, 시더를 고칠 때마다 사람이 기억하지 않아도 드러나도록 여기서 확인한다.
+# (실제로 이 왜곡을 한 번 발견해 문서에 적어두고도 시더에서 그대로 반복했다.)
+if [ "$n_likes" -gt 0 ]; then
+    printf '  좋아요 분포(보드 5구간): %s %s %s %s %s   받은 보드 %s/%s\n' \
+        "$b1" "$b2" "$b3" "$b4" "$b5" "$liked_boards" "$n_boards"
+
+    # 모든 사용자가 같은 보드를 집으면 받은 보드 수가 계정당 좋아요 수를 넘지 못한다.
+    if [ "$n_users" -gt 1 ] && [ "$liked_boards" -le "$LIKES" ]; then
+        echo "  ⚠️  사용자들이 같은 보드에만 좋아요했습니다 — 분포가 퍼지지 않았습니다." >&2
+        echo "      seed.sql의 pick CTE(stride 계산)를 확인하세요." >&2
+        exit 1
+    fi
+    # 한 구간이 균등분의 3배를 넘으면 한쪽으로 쏠린 것이다.
+    even=$(( n_likes / 5 ))
+    for b in "$b1" "$b2" "$b3" "$b4" "$b5"; do
+        if [ "$even" -gt 0 ] && [ "$b" -gt $(( even * 3 )) ]; then
+            echo "  ⚠️  좋아요가 특정 구간에 쏠렸습니다(구간 ${b}건 vs 균등 ${even}건)." >&2
+            exit 1
+        fi
+    done
+fi
+
 echo
 echo "비밀번호는 모두 Loadtest!234 입니다. 정리는 load-test/cleanup.sql."

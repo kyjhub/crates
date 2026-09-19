@@ -108,7 +108,17 @@ COMMIT;
 
 ANALYZE users; ANALYZE user_vector; ANALYZE board; ANALYZE board_item; ANALYZE board_feedback;
 
-SELECT (SELECT count(*) FROM users WHERE login_id LIKE 'loadtest_u%') AS 계정,
-       (SELECT count(*) FROM board WHERE title LIKE 'loadtest-seeded-%') AS 보드,
-       (SELECT count(*) FROM board_feedback) AS 좋아요,
-       (SELECT round(avg(c)) FROM (SELECT count(*) c FROM board_feedback GROUP BY user_id) s) AS 인당좋아요;
+-- 셸이 파싱할 수 있도록 한 줄로 내보낸다. seed.sh가 이 값으로 분포를 검증한다.
+--   계정 보드 좋아요 인당좋아요 좋아요받은보드 구간1..구간5
+SELECT
+    (SELECT count(*) FROM users WHERE login_id LIKE 'loadtest_u%')                                  AS users,
+    (SELECT count(*) FROM board WHERE title LIKE 'loadtest-seeded-%')                               AS boards,
+    (SELECT count(*) FROM board_feedback)                                                           AS likes,
+    COALESCE((SELECT round(avg(c)) FROM (SELECT count(*) c FROM board_feedback GROUP BY user_id) s), 0) AS per_user,
+    (SELECT count(DISTINCT board_id) FROM board_feedback)                                           AS liked_boards,
+    COALESCE((SELECT string_agg(cnt::text, ' ' ORDER BY bucket) FROM (
+        SELECT b.bucket, count(f.id) AS cnt
+        FROM (SELECT id, ntile(5) OVER (ORDER BY id) AS bucket
+              FROM board WHERE title LIKE 'loadtest-seeded-%') b
+        LEFT JOIN board_feedback f ON f.board_id = b.id
+        GROUP BY b.bucket) x), '0 0 0 0 0')                                                         AS buckets;
