@@ -5,7 +5,11 @@
 #
 #   시나리오   load-test/scenarios/ 안의 파일명 (확장자 생략 가능)
 #   측정횟수   기본 3. 1회 측정으로는 아무것도 말할 수 없다
-#   --keep     매 실행 전 cleanup을 건너뛴다 (board 누적 효과를 보려는 board-growth용)
+#   --keep     매 실행 전 초기화를 건너뛴다 (board 누적 효과를 보려는 board-growth용)
+#
+#   SEED 환경변수로 매 실행의 출발 상태를 정한다 ("계정수 보드수 계정당좋아요").
+#     SEED="20 600 0"   기본. 좋아요 없는 계정 20개와 보드 600개
+#     SEED="10 500 150" 1인당 이력 150건에서 시작 (like-history용)
 #
 # 왜 이런 모양인가
 #   워밍업  첫 실행은 정상 상태보다 50% 느리다(JVM JIT). 한 번 버린다
@@ -19,6 +23,7 @@ SCENARIO="${1:?시나리오 이름이 필요합니다 (예: like-new-board)}"
 SCENARIO="load-test/scenarios/${SCENARIO%.js}.js"
 [ -f "$SCENARIO" ] || { echo "시나리오를 찾을 수 없습니다: $SCENARIO" >&2; exit 1; }
 RUNS="${2:-3}"
+SEED="${SEED:-${USERS:-20} 600 0}"
 case "${3:-}${2:-}" in *--keep*) KEEP=1;; *) KEEP=0;; esac
 
 PG="docker exec -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server psql -U $POSTGRESQL_USERNAME -d crates -t -A -c"
@@ -45,10 +50,14 @@ wait_ready() {
     echo "Qdrant가 계속 바쁩니다 (${cpu}%) — 측정을 신뢰할 수 없습니다" >&2; exit 1
 }
 
+# 매 실행의 출발 상태를 같게 만든다. 지우기만 하면 시나리오가 쓸 계정도 사라지므로
+# 지운 뒤 다시 심는다. 데이터 준비는 k6가 아니라 seed.sh의 몫이다(docs 4-9).
 reset_data() {
     [ "$KEEP" = "1" ] && return
     docker exec -i -e PGPASSWORD="$POSTGRESQL_PASSWORD" postgres_server \
         psql -U "$POSTGRESQL_USERNAME" -d crates -q -v ON_ERROR_STOP=1 < load-test/cleanup.sql >/dev/null
+    # shellcheck disable=SC2086
+    ./load-test/seed.sh $SEED >/dev/null
     $PG "VACUUM ANALYZE board" >/dev/null
     $PG "SELECT pg_stat_statements_reset()" >/dev/null 2>&1 || true
 }
@@ -68,7 +77,7 @@ PY
 }
 
 wait_ready
-echo "시나리오: $SCENARIO   측정 ${RUNS}회   cleanup: $([ "$KEEP" = 1 ] && echo 건너뜀 || echo 매회)"
+echo "시나리오: $SCENARIO   측정 ${RUNS}회   출발 상태: $([ "$KEEP" = 1 ] && echo "유지(--keep)" || echo "seed.sh $SEED")"
 echo
 
 reset_data

@@ -35,13 +35,37 @@ docker compose --env-file crates_server.env up -d --build
 > `./gradlew bootRun`으로 띄우고 재지 말 것. `spring-boot-devtools`가 활성화돼
 > 재시작 클래스로더가 끼고, 자원 상한도 없어서 **수치가 재현되지 않는다.**
 
+## 데이터 준비와 부하 생성은 다른 도구다
+
+```bash
+./load-test/seed.sh [계정수] [보드수] [계정당좋아요]
+```
+
+`seed.sh`가 **측정하려는 상태**를 만들고, k6는 **그 상태에 부하**를 건다. k6는 계정도 보드도
+만들지 않는다 — 없으면 "seed.sh를 먼저 돌리라"며 바로 실패한다.
+
+```bash
+./load-test/seed.sh 20 600 0      # 좋아요 없는 계정 20개 + 보드 600개
+./load-test/seed.sh 1 1000 200    # 이력 200건짜리 계정 하나 (프로파일링용)
+```
+
+대부분을 SQL로 꽂는다. API로 좋아요 200건을 만들면 요청 200번 + 비동기 재계산 200번이라
+수십 초가 걸리고, **준비 자체가 시스템을 데워 측정 조건을 바꾼다.** SQL이면 1초 안쪽이다.
+
+> BCrypt 해시와 초기 취향 벡터는 SQL로 만들 수 없어, 기준 계정(`loadtest_seed`) 하나만
+> API 회원가입으로 만들고 나머지는 거기서 복사한다. 비밀번호는 전부 `Loadtest!234`.
+
+**왜 나눴나** — 그동안 k6가 데이터 생성까지 겸했다. 그래서 실행마다 상태가 누적돼 출발점이
+달라졌고, 그것이 "개선을 퇴행으로 잘못 읽은" 원인이었다(아래 4-9 참고).
+
 ## 실행
 
 ```bash
 ./load-test/run-measure.sh <시나리오> [측정횟수]
 ```
 
-스크립트가 **준비 확인 → 워밍업 1회(버림) → 측정 N회 → 중앙값**을 한다.
+스크립트가 **준비 확인 → 초기화·재시딩 → 워밍업 1회(버림) → 측정 N회 → 중앙값**을 한다.
+매 측정 전에 `cleanup.sql` + `seed.sh`로 출발 상태를 똑같이 되돌린다.
 
 | 시나리오 | 바뀌는 변수 | 쓸 곳 |
 |---|---|---|
@@ -53,14 +77,18 @@ docker compose --env-file crates_server.env up -d --build
 # 기본: 코드 변경 전후 비교
 USERS=20 ITERATIONS=600 ./load-test/run-measure.sh like-new-board 3
 
-# board가 누적되는 효과 (--keep으로 매 실행 cleanup을 건너뛴다)
+# board가 누적되는 효과 (--keep으로 매 실행 초기화를 건너뛴다)
 USERS=20 ITERATIONS=600 ./load-test/run-measure.sh board-growth 5 --keep
 
 # 이력이 쌓일 때 재계산 비용 — 실행 후 앱 지표를 함께 볼 것
-USERS=10 ITERATIONS=600 POOL=100 ./load-test/run-measure.sh like-history 3
+USERS=10 ITERATIONS=600 POOL=500 SEED="10 600 0" ./load-test/run-measure.sh like-history 3
+
+# 이미 이력 150건인 상태에서 시작
+SEED="10 600 150" ./load-test/run-measure.sh like-history 3
 ```
 
-환경변수: `USERS`, `ITERATIONS`, `POOL`(like-history), `BASE_URL`, `MAX_CONTENT_ID`(기본 191239).
+환경변수: `USERS`, `ITERATIONS`, `POOL`(like-history), `SEED`("계정수 보드수 계정당좋아요"),
+`BASE_URL`, `MAX_CONTENT_ID`(기본 191239).
 
 ### 왜 이런 모양인가
 
@@ -146,8 +174,8 @@ docker exec -i -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server \
 ## 기준선과 한계
 
 ```
-backend 4 vCPU / 3GB, VU 20, like-new-board 600회, 워밍업 후 3회 중앙값
-  183.2 /s   p95 132ms   퍼짐 5%        (2026-09-19)
+backend 4 vCPU / 3GB, VU 20, like-new-board 300회, SEED="20 600 0"
+워밍업 후 2회 중앙값 → 164.6 /s   p95 72ms   퍼짐 4%        (2026-09-19)
 ```
 
 > 2026-09-19 이전 수치(97 TPS 등)는 워밍업 없이 1회 측정한 것이라 이 값과 비교할 수 없다.

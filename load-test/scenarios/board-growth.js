@@ -10,7 +10,7 @@
 // board가 누적되면서 처리율이 어떻게 변하는지를 본다.
 
 import { check } from 'k6';
-import { ensureUser, likeNewBoard, unlikeBoard, PREFIX } from '../lib/api.js';
+import { likeNewBoard, login, unlikeBoard, PREFIX } from '../lib/api.js';
 import { standard } from '../lib/options.js';
 
 const USERS = Number(__ENV.USERS || 20);
@@ -18,10 +18,11 @@ const ITERATIONS = Number(__ENV.ITERATIONS || 600);
 
 export const options = standard({ vus: USERS, iterations: ITERATIONS });
 
+// 준비: ./load-test/seed.sh <USERS> <보드> 0
 export function setup() {
   const tokens = [];
   for (let i = 0; i < USERS; i++) {
-    tokens.push(ensureUser(`g${i}`));
+    tokens.push(login(`u${i}`));
   }
   return { tokens };
 }

@@ -12,7 +12,7 @@
 // run-measure.sh 를 돌려 중앙값을 비교하는 용도다.
 
 import { check } from 'k6';
-import { ensureUser, likeNewBoard, PREFIX } from '../lib/api.js';
+import { likeNewBoard, login, PREFIX } from '../lib/api.js';
 import { standard } from '../lib/options.js';
 
 const USERS = Number(__ENV.USERS || 20);
@@ -20,10 +20,11 @@ const ITERATIONS = Number(__ENV.ITERATIONS || 600);
 
 export const options = standard({ vus: USERS, iterations: ITERATIONS });
 
+// 계정을 만들지 않고 로그인만 한다. 준비는 ./load-test/seed.sh <USERS> <보드> 0
 export function setup() {
   const tokens = [];
   for (let i = 0; i < USERS; i++) {
-    tokens.push(ensureUser(`u${i}`));
+    tokens.push(login(`u${i}`));
   }
   return { tokens };
 }
