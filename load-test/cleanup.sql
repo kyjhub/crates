@@ -33,3 +33,23 @@ SELECT (SELECT count(*) FROM board) AS 보드,
        (SELECT count(*) FROM board_feedback) AS 좋아요;
 
 COMMIT;
+
+-- 지운 공간을 실제로 돌려준다.
+--
+-- DELETE는 행을 죽은 것으로 표시할 뿐 페이지를 반납하지 않는다. 그래서 정리 직후에도
+-- 테이블은 이전 실행의 크기를 유지하고, seq scan은 그 빈 페이지를 전부 읽는다.
+-- 규모를 바꿔가며 재면 새 규모가 아니라 **이전 실행의 잔해**를 재게 된다.
+--
+--   보드 4만 개를 정리한 직후:  board 820행이 1,311페이지
+--   VACUUM FULL 후:             board 820행이    15페이지      ← seq scan 비용 87배 차이
+--
+-- 일반 VACUUM으로는 부족하다. 빈 페이지를 재사용 가능으로만 표시하고 테이블 끝의
+-- 연속된 빈 페이지만 잘라내므로, 살아있는 행 하나가 뒤쪽에 있으면 통째로 남는다.
+--
+-- ACCESS EXCLUSIVE 락을 잡는다. 앱이 떠 있으면 밀릴 수 있어 상한을 둔다.
+-- 시간 초과는 조용히 넘기지 않는다 — 정리가 안 된 채 측정하면 위의 87배를 재게 된다.
+SET lock_timeout = '30s';
+
+VACUUM (FULL, ANALYZE) board;
+VACUUM (FULL, ANALYZE) board_item;
+VACUUM (FULL, ANALYZE) board_feedback;

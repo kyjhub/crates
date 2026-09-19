@@ -58,7 +58,9 @@ reset_data() {
         psql -U "$POSTGRESQL_USERNAME" -d crates -q -v ON_ERROR_STOP=1 < load-test/cleanup.sql >/dev/null
     # shellcheck disable=SC2086
     ./load-test/seed.sh $SEED >/dev/null
-    $PG "VACUUM ANALYZE board" >/dev/null
+    # 공간 회수는 cleanup.sql이 VACUUM FULL로 끝냈다. 여기서는 방금 심은 행을 반영해
+    # 통계만 다시 만든다 — 시딩 전 통계로는 플래너가 빈 테이블을 가정한다.
+    $PG "ANALYZE board, board_item, board_feedback" >/dev/null
     $PG "SELECT pg_stat_statements_reset()" >/dev/null 2>&1 || true
 }
 
