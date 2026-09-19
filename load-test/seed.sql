@@ -65,18 +65,38 @@ JOIN board b ON b.content_signature = s.signature AND b.board_type = 'AI_RECOMME
 CROSS JOIN generate_series(1, 8) j;
 
 -- ── 좋아요 ──────────────────────────────────────────────────
--- 계정마다 앞에서부터 :likes 개를 누른 것으로 만든다.
+-- 좋아요를 보드 전 구간에 고르게 흩뿌린다.
+--
+-- 앞에서부터 :likes 개를 집으면(ORDER BY id LIMIT n) 모든 사용자가 같은 앞쪽 보드만
+-- 좋아요하고 나머지는 0건이 된다. 그러면 조인 비용이 실제보다 작게 나온다 — 실측에서
+-- 좋아요가 앞쪽에 몰렸을 때 58버퍼, 전 구간에 흩어졌을 때 480버퍼로 8배 차이가 났다.
+-- 측정하려는 것을 측정기가 왜곡하는 경우라 반드시 흩어야 한다.
+--
+-- 흩는 방법: 보드를 순번(rn)으로 세우고, 사용자마다 시작점을 어긋나게 준 뒤
+-- stride(= 보드수/좋아요수) 간격으로 집는다. 결정적이라 같은 인자면 같은 데이터가 나온다.
+--   stride 간격이라 한 사용자의 :likes 개가 전 구간에 퍼지고,
+--   시작점이 사용자마다 달라 사용자끼리도 겹치는 보드가 적다.
+--
 -- 시각을 하루씩 벌려 둔다. 가중치가 "좋아요한 날짜의 최신순 순위"라 전부 같은 날이면
 -- 가중치가 모두 1이 되어 실제와 다른 분포가 된다.
+WITH pool AS (
+    SELECT id, (row_number() OVER (ORDER BY id) - 1) AS rn, count(*) OVER () AS total
+    FROM board WHERE title LIKE 'loadtest-seeded-%' AND deleted_at IS NULL
+),
+seeded_user AS (
+    SELECT id, (row_number() OVER (ORDER BY id) - 1) AS ui
+    FROM users WHERE login_id LIKE 'loadtest_u%'
+),
+pick AS (
+    SELECT u.id AS user_id, j,
+           ((u.ui * 7919) + j * GREATEST((SELECT total FROM pool LIMIT 1) / :likes, 1))
+               % (SELECT total FROM pool LIMIT 1) AS rn
+    FROM seeded_user u
+    CROSS JOIN generate_series(0, :likes - 1) j
+)
 INSERT INTO board_feedback (board_id, user_id, rating, created_at)
-SELECT b.id, u.id, 'LIKE', now() - (row_number() OVER (PARTITION BY u.id ORDER BY b.id) || ' days')::interval
-FROM users u
-CROSS JOIN LATERAL (
-    SELECT b.id FROM board b
-    WHERE b.title LIKE 'loadtest-seeded-%' AND b.deleted_at IS NULL
-    ORDER BY b.id LIMIT :likes
-) b
-WHERE u.login_id LIKE 'loadtest_u%'
+SELECT p.id, pick.user_id, 'LIKE', now() - (pick.j || ' days')::interval
+FROM pick JOIN pool p ON p.rn = pick.rn
 ON CONFLICT DO NOTHING;
 
 -- like_count를 실제 좋아요 수와 맞춘다. 안 맞으면 인기 보드 정렬이 엉뚱해진다.

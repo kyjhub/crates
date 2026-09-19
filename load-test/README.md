@@ -44,6 +44,10 @@ docker compose --env-file crates_server.env up -d --build
 `seed.sh`가 **측정하려는 상태**를 만들고, k6는 **그 상태에 부하**를 건다. k6는 계정도 보드도
 만들지 않는다 — 없으면 "seed.sh를 먼저 돌리라"며 바로 실패한다.
 
+좋아요는 보드 **전 구간에 고르게** 흩뿌린다. 앞에서부터 집으면 모든 사용자가 같은 앞쪽
+보드만 좋아요하고 나머지는 0건이 되는데, 그러면 조인 비용이 실제보다 작게 나온다 —
+실측에서 몰렸을 때 58버퍼, 흩어졌을 때 480버퍼로 **8배 차이**가 났다.
+
 ```bash
 ./load-test/seed.sh 20 600 0      # 좋아요 없는 계정 20개 + 보드 600개
 ./load-test/seed.sh 1 1000 200    # 이력 200건짜리 계정 하나 (프로파일링용)
@@ -114,6 +118,54 @@ SEED="10 600 150" ./load-test/run-measure.sh like-history 3
 `ApplicationRunner`를 "Started" 로그 이후에 돌리고, `seed completed` 이후에도 Qdrant가
 HNSW를 백그라운드로 짓는다(실측 35초, CPU 815%). 스크립트가 Qdrant CPU가 20% 아래로
 떨어질 때까지 기다린다.
+
+## 느린 쿼리·메서드 찾기 (부하가 필요 없다)
+
+**이건 부하테스트가 아니다.** 요청 몇 번이면 된다. `pg_stat_statements`는 누적 집계라
+6요청만으로도 어느 쿼리가 비싼지 드러난다.
+
+```bash
+# 1. 상태 준비
+./load-test/seed.sh 10 500 50
+
+# 2. 누적 초기화
+docker exec -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server \
+  psql -U $POSTGRESQL_USERNAME -d crates -c "SELECT pg_stat_statements_reset();"
+
+# 3. 재고 싶은 엔드포인트를 몇 번 호출   ← 이 단계가 빠지면 아무것도 안 잡힌다
+TOKEN=$(curl -s -X POST localhost:8080/api/auth/login -H 'Content-Type: application/json' \
+  -d '{"loginId":"loadtest_u0","pwd":"Loadtest!234"}' | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['accessToken'])")
+for i in 1 2 3; do curl -s -o /dev/null -H "Authorization: Bearer $TOKEN" \
+  localhost:8080/api/boards/recommendation/user; done
+
+# 4. 읽기 (아래 "읽는 법" ③)
+```
+
+**3단계를 빠뜨리기 쉽다.** `seed.sh`는 SQL을 직접 꽂으므로 레포지토리 메서드를 거치지 않는다.
+시딩만 하고 조회하면 결과가 비어 있다.
+
+### pg_stat_statements가 못 보는 것
+
+레포지토리 메서드를 지정할 필요는 없다 — DB에 도달한 **모든 SQL**을 자동으로 잡는다.
+다만 두 가지는 안 보인다.
+
+**어느 Java 메서드가 날린 쿼리인지** 알려주지 않는다. 쿼리 텍스트를 보고 직접 찾아야 한다.
+
+**SQL이 아닌 것은 전혀 안 보인다.** 이 프로젝트에서는 이게 결정적이다 — 취향 벡터 재계산
+1건이 24.56ms인데 그중 SQL은 **0.17ms(0.7%)**뿐이고, 나머지는 Qdrant 왕복과 768차원 벡터
+연산이다. `pg_stat_statements`만 보면 가장 비싼 곳을 통째로 놓친다.
+
+| 도구 | 보는 것 | 잴 곳 지정 |
+|---|---|---|
+| `pg_stat_statements` | 모든 SQL | 불필요 |
+| Micrometer Timer | 지정한 메서드 | **필요** |
+| JFR (`jcmd 1 JFR.start`) | JVM 전체 핫스팟 | 불필요, 대신 해석이 필요 |
+
+```bash
+# 어디가 느린지 모를 때: JDK 내장 프로파일러
+docker exec backend_server jcmd 1 JFR.start duration=60s filename=/tmp/rec.jfr
+docker cp backend_server:/tmp/rec.jfr .     # JDK Mission Control으로 연다
+```
 
 ## 읽는 법
 
