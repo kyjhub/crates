@@ -12,6 +12,7 @@
 --   :users   만들 계정 수
 --   :boards  만들 보드 수 (AI_RECOMMEND)
 --   :likes   계정당 좋아요 수 (boards 이하여야 한다)
+--   :stride  보드 안에서 콘텐츠를 얼마나 벌려 담을지 (seed.sh가 계산해 넘긴다)
 --
 -- 전제: loadtest_seed 계정이 API 회원가입으로 미리 만들어져 있어야 한다. 비밀번호 해시와
 --       취향 벡터를 그 계정에서 복사하기 때문이다(BCrypt 해시를 SQL로 만들 수 없다).
@@ -40,18 +41,39 @@ FROM users u WHERE u.login_id LIKE 'loadtest_u%'
 ON CONFLICT (user_id) DO NOTHING;
 
 -- ── 보드 ────────────────────────────────────────────────────
--- 보드 k는 콘텐츠 (k-1)*8+1 .. (k-1)*8+8 을 담는다. 연속 구간이라
---   · 한 보드 안에서 콘텐츠가 겹치지 않고 (uk_board_item_content)
---   · 보드마다 signature가 달라진다 (uk_board_ai_signature)
+-- 보드 k는 콘텐츠 위치 (k-1), (k-1)+S, (k-1)+2S, ... (k-1)+7S 를 담는다. S는 :stride.
+--
+-- 예전에는 (k-1)*8+1 .. +8 연속 블록을 썼다. 보드끼리 콘텐츠가 전혀 겹치지 않아
+-- 만들 수 있는 보드가 콘텐츠/8 (약 23,900개)로 막혔다. 실제 서비스에서는 서로 다른 보드가
+-- 같은 영화를 담는 것이 정상이고, content_signature만 다르면 제약도 걸리지 않는다.
+--
+-- 슬라이딩 윈도우로 바꾸면서 얻는 것
+--   · 보드 상한이 콘텐츠 - 7*S 로 늘어난다 (S=1000이면 약 184,000개)
+--   · 보드 k와 k+S가 콘텐츠 7건을 공유한다 — 운영에 가까운 중복 분포
+--   · 보드 k와 k+1은 한 건도 겹치지 않는다 (위치가 통째로 1씩 밀린다)
+--
+-- 유지되는 성질
+--   · 한 보드 안에서 위치가 S씩 증가하므로 콘텐츠가 겹치지 않는다 (uk_board_item_content)
+--   · 보드마다 시작 위치가 달라 signature가 전부 다르다 (uk_board_ai_signature)
+--   · 위치가 오름차순이라 id도 오름차순이다 — Board.signatureOf가 요구하는 정렬과 같다
+--
 -- content_signature는 Board.signatureOf와 같은 규칙이다 — id를 오름차순 정렬해 콤마로 잇는다.
 -- 앱이 계산한 값과 글자 하나라도 다르면 중복 검사가 어긋나 보드가 두 벌로 쌓인다.
+--
+-- id를 직접 계산하지 않고 위치(row_number)로 다루는 이유: 콘텐츠 id에 빈틈이 생기면
+-- 없는 id를 참조해 FK에서 깨진다. 지금은 1..191239로 연속이지만 그것에 기대지 않는다.
+CREATE TEMP TABLE content_pos ON COMMIT DROP AS
+SELECT id, (row_number() OVER (ORDER BY id) - 1) AS pos FROM content;
+CREATE INDEX ON content_pos (pos);
+
 CREATE TEMP TABLE seeded_board ON COMMIT DROP AS
-WITH picked AS (
-    SELECT k, array_agg(((k - 1) * 8 + j)::bigint ORDER BY j) AS ids
-    FROM generate_series(1, :boards) k, generate_series(1, 8) j
-    GROUP BY k
-)
-SELECT k, ids, array_to_string(ids, ',') AS signature FROM picked;
+SELECT k,
+       array_agg(c.id ORDER BY j) AS ids,
+       string_agg(c.id::text, ',' ORDER BY j) AS signature
+FROM generate_series(1, :boards) k
+CROSS JOIN generate_series(1, 8) j
+JOIN content_pos c ON c.pos = (k - 1) + (j - 1) * :stride
+GROUP BY k;
 
 INSERT INTO board (user_id, board_type, visibility, title, content_signature, like_count, created_at)
 SELECT NULL, 'AI_RECOMMEND', 'PUBLIC', 'loadtest-seeded-' || k, signature, 0, now()
