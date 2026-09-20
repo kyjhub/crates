@@ -105,7 +105,8 @@ class RepositoryBenchmarkTest {
     void benchmarkBoardFeedbackRepository() {
         Long userId = userWithMostLikes();
         List<Long> liked = likedBoardIds(userId, 300);
-        List<Long> page = liked.subList(0, 20);
+        // 계정당 좋아요가 20건 미만인 데이터셋에서도 돌아야 한다.
+        List<Long> page = liked.subList(0, Math.min(20, liked.size()));
 
         benchmark("BoardFeedbackRepository.existsByBoardIdAndUserIdAndRating", i ->
                 boardFeedbackRepository.existsByBoardIdAndUserIdAndRating(
@@ -123,9 +124,13 @@ class RepositoryBenchmarkTest {
         benchmark("BoardFeedbackRepository.findLikedBoardIds  (보드 20개 대조)", i ->
                 boardFeedbackRepository.findLikedBoardIds(userId, Rating.LIKE, page).size());
 
-        // 반복마다 다른 보드를 지운다. 같은 행을 200번 지우면 두 번째부터 0행이라 측정이 안 된다.
-        benchmark("BoardFeedbackRepository.deleteFeedback  (쓰기·롤백)", i ->
-                boardFeedbackRepository.deleteFeedback(liked.get(i % liked.size()), userId, Rating.LIKE));
+        // 반복마다 다른 행을 지운다. 같은 행을 200번 지우면 두 번째부터 0행이라 측정이 안 된다.
+        // 한 계정의 좋아요만으로는 231건(워밍업+표본)을 못 채울 수 있어 계정을 가로질러 모은다.
+        List<long[]> pairs = feedbackPairs(WARMUP + 1 + ITERATIONS);
+        benchmark("BoardFeedbackRepository.deleteFeedback  (쓰기·롤백)", i -> {
+            long[] pair = pairs.get(i % pairs.size());
+            return boardFeedbackRepository.deleteFeedback(pair[0], pair[1], Rating.LIKE);
+        });
     }
 
     // ── BoardRepository ─────────────────────────────────────────────────────
@@ -174,7 +179,7 @@ class RepositoryBenchmarkTest {
     void benchmarkBoardItemRepository() {
         Long userId = userWithMostLikes();
         List<Long> boards = likedBoardIds(userId, 300);
-        List<Long> page = boards.subList(0, 20);
+        List<Long> page = boards.subList(0, Math.min(20, boards.size()));
 
         benchmark("BoardItemRepository.findContentIdsByBoardId", i ->
                 boardItemRepository.findContentIdsByBoardId(boards.get(i % boards.size())).size());
@@ -326,6 +331,18 @@ class RepositoryBenchmarkTest {
                         + "먼저 ./load-test/seed.sh <계정수> <보드수> <계정당좋아요> 를 실행하세요")
                 .isNotEmpty();
         return ids.get(0);
+    }
+
+    /** 지울 (board_id, user_id) 쌍. 반복마다 다른 행을 지우기 위해 계정을 가로질러 모은다. */
+    private List<long[]> feedbackPairs(int limit) {
+        List<long[]> pairs = jdbcTemplate.query(
+                "SELECT board_id, user_id FROM board_feedback WHERE rating = 'LIKE' "
+                        + "ORDER BY board_id, user_id LIMIT ?",
+                (rs, n) -> new long[]{rs.getLong("board_id"), rs.getLong("user_id")}, limit);
+        assertThat(pairs)
+                .as("지울 좋아요가 %d건 필요한데 %d건뿐입니다 — seed.sh 규모를 키우세요", limit, pairs.size())
+                .hasSizeGreaterThanOrEqualTo(limit);
+        return pairs;
     }
 
     private List<Long> likedBoardIds(Long userId, int limit) {
