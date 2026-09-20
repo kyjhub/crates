@@ -1,9 +1,12 @@
 package com.crates.crates.repository;
 
+import com.crates.crates.enumData.AuthProvider;
+import com.crates.crates.enumData.BoardType;
 import com.crates.crates.enumData.Rating;
 import com.crates.crates.enumData.Visibility;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,7 +21,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.IntSupplier;
+import java.util.function.IntUnaryOperator;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,12 +37,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * V5·V7에서 반복해서 물린 지점이다).</p>
  *
  * <p>여기서는 리포지토리 메서드를 <b>직접</b> 호출한다. 경로가 없어도 되고, 나가는 SQL은
- * 운영에서 나가는 것과 같다. 대신 단일 스레드라 커넥션 경합·락·비동기 재계산은 못 본다.
- * 둘은 보완 관계이지 대체 관계가 아니다.</p>
+ * 운영에서 나가는 것과 같다. 대신 단일 스레드라 커넥션 경합·락·비동기 재계산은 못 본다.</p>
  *
  * <h2>데이터 준비</h2>
  * <pre>
- *   ./load-test/seed.sh 20 20000 180      # 계정 20 / 보드 2만 / 계정당 좋아요 180
+ *   psql ... &lt; load-test/cleanup.sql          # 이전 실행의 흔적 + 공간 회수
+ *   ./load-test/seed.sh 1000 20000 10000      # 계정 / 보드 / 계정당 좋아요
+ *   ./gradlew test --tests '*RepositoryBenchmarkTest' --rerun-tasks
  * </pre>
  * 준비 없이 돌리면 픽스처 단계에서 실패한다. <b>0행을 반환하는 쿼리를 재고 "빠르다"고
  * 결론 내리는 것</b>이 이 프로젝트에서 가장 자주 저지른 실수다.
@@ -51,12 +55,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 그 둘을 보려고 Java wall-clock도 같이 잰다 — DB는 빠른데 wall-clock이 느리면 원인은
  * 엔티티 하이드레이션이나 N+1이다.</p>
  *
- * <p>통계를 리셋하지 않는다. 증분 방식이라 리셋이 필요 없고, 리셋하면 같은 DB를 보고 있는
- * 앱과 다른 측정의 누적치까지 날아간다.</p>
+ * <p>쓰기 메서드는 트랜잭션이 롤백되므로 안전하다. 다만 같은 행을 200번 지우면 두 번째부터
+ * 0행이 되므로, 반복마다 다른 대상을 쓴다.</p>
+ *
+ * <p>시더가 만들지 않는 데이터(USER_CUSTOM 보드, 리프레시 토큰, OAuth 계정)는 트랜잭션 안에서
+ * 만들고 {@code ANALYZE}까지 돌린다. 통계를 갱신하지 않으면 플래너가 빈 테이블을 가정해
+ * 엉뚱한 계획을 고른다. 이 행들도 롤백과 함께 사라진다.</p>
  */
 @DataJpaTest(showSql = false)   // 로그 포매팅 비용이 측정 구간에 섞이지 않도록
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@ActiveProfiles("benchmark")   // ddl-auto=none 을 고정한다. 빼면 개발 DB가 drop/create 된다.
+@ActiveProfiles("benchmark")    // ddl-auto=none 을 고정한다. 빼면 개발 DB가 drop/create 된다.
 class RepositoryBenchmarkTest {
 
     /**
@@ -69,46 +77,231 @@ class RepositoryBenchmarkTest {
     /** 측정 표본 수. p99가 의미를 가지려면 최소 100은 필요하다. */
     private static final int ITERATIONS = 200;
 
+    /** 전체 요약표를 위해 모은다. 테스트 순서와 무관하게 마지막에 한 번 정렬해 출력한다. */
+    private static final List<Result> RESULTS = new ArrayList<>();
+
+    private record Result(String method, int rows, double blocks,
+                          double dbP50, double dbP95, double dbP99,
+                          double javaP50, double javaP95, double javaP99, String note) {}
+
     @Autowired private JdbcTemplate jdbcTemplate;
     @PersistenceContext private EntityManager entityManager;
 
     @Autowired private BoardFeedbackRepository boardFeedbackRepository;
     @Autowired private BoardRepository boardRepository;
+    @Autowired private BoardItemRepository boardItemRepository;
     @Autowired private ContentRepository contentRepository;
+    @Autowired private MovieRepository movieRepository;
+    @Autowired private BookRepository bookRepository;
+    @Autowired private MusicRepository musicRepository;
+    @Autowired private UserRepository userRepository;
+    @Autowired private UserVectorRepository userVectorRepository;
+    @Autowired private UserRefreshTokenRepository userRefreshTokenRepository;
 
-    // ── 측정 대상 ────────────────────────────────────────────────────────────
+    // ── BoardFeedbackRepository ─────────────────────────────────────────────
 
     @Test
-    @DisplayName("[성능] findLikedBoardsWithTime — 취향 벡터 재계산이 좋아요 목록을 읽는 쿼리")
-    void benchmark_findLikedBoardsWithTime() {
+    @DisplayName("[성능] BoardFeedbackRepository")
+    void benchmarkBoardFeedbackRepository() {
         Long userId = userWithMostLikes();
-        benchmark("BoardFeedbackRepository.findLikedBoardsWithTime  (user_id=" + userId + ")",
-                () -> boardFeedbackRepository.findLikedBoardsWithTime(userId, Rating.LIKE).size());
+        List<Long> liked = likedBoardIds(userId, 300);
+        List<Long> page = liked.subList(0, 20);
+
+        benchmark("BoardFeedbackRepository.existsByBoardIdAndUserIdAndRating", i ->
+                boardFeedbackRepository.existsByBoardIdAndUserIdAndRating(
+                        liked.get(i % liked.size()), userId, Rating.LIKE) ? 1 : 0);
+
+        benchmark("BoardFeedbackRepository.existsByUserIdAndRating", i ->
+                boardFeedbackRepository.existsByUserIdAndRating(userId, Rating.LIKE) ? 1 : 0);
+
+        benchmark("BoardFeedbackRepository.findLikedBoardsWithTime  (취향 벡터 재계산)", i ->
+                boardFeedbackRepository.findLikedBoardsWithTime(userId, Rating.LIKE).size());
+
+        benchmark("BoardFeedbackRepository.findLikedBoards  (보관함 좋아요 탭, 20건)", i ->
+                boardFeedbackRepository.findLikedBoards(userId, Rating.LIKE, PageRequest.of(0, 20)).size());
+
+        benchmark("BoardFeedbackRepository.findLikedBoardIds  (보드 20개 대조)", i ->
+                boardFeedbackRepository.findLikedBoardIds(userId, Rating.LIKE, page).size());
+
+        // 반복마다 다른 보드를 지운다. 같은 행을 200번 지우면 두 번째부터 0행이라 측정이 안 된다.
+        benchmark("BoardFeedbackRepository.deleteFeedback  (쓰기·롤백)", i ->
+                boardFeedbackRepository.deleteFeedback(liked.get(i % liked.size()), userId, Rating.LIKE));
     }
 
+    // ── BoardRepository ─────────────────────────────────────────────────────
+
     @Test
-    @DisplayName("[성능] findLikedBoards — 보관함 좋아요 탭 (20건)")
-    void benchmark_findLikedBoards() {
+    @DisplayName("[성능] BoardRepository")
+    void benchmarkBoardRepository() {
         Long userId = userWithMostLikes();
-        benchmark("BoardFeedbackRepository.findLikedBoards  (user_id=" + userId + ", size=20)",
-                () -> boardFeedbackRepository.findLikedBoards(userId, Rating.LIKE, PageRequest.of(0, 20)).size());
+        List<Long> boards = likedBoardIds(userId, 300);
+        String aiSignature = jdbcTemplate.queryForObject(
+                "SELECT content_signature FROM board WHERE board_type = 'AI_RECOMMEND' "
+                        + "AND deleted_at IS NULL ORDER BY id LIMIT 1", String.class);
+
+        benchmark("BoardRepository.findPopularBoards  (인기 보드, 10건)", i ->
+                boardRepository.findPopularBoards(Visibility.PUBLIC, PageRequest.of(0, 10)).size());
+
+        benchmark("BoardRepository.findActiveByTypeAndSignature", i ->
+                boardRepository.findActiveByTypeAndSignature(BoardType.AI_RECOMMEND, aiSignature).isPresent() ? 1 : 0);
+
+        benchmark("BoardRepository.findMyBoards  (보관함 전체 탭, 20건)", i ->
+                boardRepository.findMyBoards(userId, Rating.LIKE, PageRequest.of(0, 20)).size());
+
+        benchmark("BoardRepository.findLikeCountById", i ->
+                boardRepository.findLikeCountById(boards.get(i % boards.size())).isPresent() ? 1 : 0);
+
+        benchmark("BoardRepository.incrementLikeCount  (쓰기·롤백)", i ->
+                boardRepository.incrementLikeCount(boards.get(i % boards.size())));
+
+        benchmark("BoardRepository.decrementLikeCount  (쓰기·롤백)", i ->
+                boardRepository.decrementLikeCount(boards.get(i % boards.size())));
+
+        // 시더는 USER_CUSTOM 보드를 만들지 않는다. 트랜잭션 안에서 만들고 ANALYZE까지 돌린다.
+        String customSignature = seedUserCustomBoards(userId, 2_000);
+
+        benchmark("BoardRepository.findCreatedByMe  (보관함 만든 것 탭, 20건)", i ->
+                boardRepository.findCreatedByMe(userId, PageRequest.of(0, 20)).size(), "픽스처");
+
+        benchmark("BoardRepository.findActiveUserBoardBySignature", i ->
+                boardRepository.findActiveUserBoardBySignature(userId, customSignature).isPresent() ? 1 : 0, "픽스처");
     }
 
-    @Test
-    @DisplayName("[성능] findPopularBoards — 인기 보드 (10건)")
-    void benchmark_findPopularBoards() {
-        requireRows("SELECT count(*) FROM board WHERE visibility = 'PUBLIC' AND deleted_at IS NULL",
-                "공개 보드가 없습니다");
-        benchmark("BoardRepository.findPopularBoards  (PUBLIC, size=10)",
-                () -> boardRepository.findPopularBoards(Visibility.PUBLIC, PageRequest.of(0, 10)).size());
-    }
+    // ── BoardItemRepository ─────────────────────────────────────────────────
 
     @Test
-    @DisplayName("[성능] findContentIdsAfter — 콘텐츠 ID 커서 페이징 (256건)")
-    void benchmark_findContentIdsAfter() {
-        requireRows("SELECT count(*) FROM content", "콘텐츠가 없습니다");
-        benchmark("ContentRepository.findContentIdsAfter  (after=0, size=256)",
-                () -> contentRepository.findContentIdsAfter(0L, PageRequest.of(0, 256)).size());
+    @DisplayName("[성능] BoardItemRepository")
+    void benchmarkBoardItemRepository() {
+        Long userId = userWithMostLikes();
+        List<Long> boards = likedBoardIds(userId, 300);
+        List<Long> page = boards.subList(0, 20);
+
+        benchmark("BoardItemRepository.findContentIdsByBoardId", i ->
+                boardItemRepository.findContentIdsByBoardId(boards.get(i % boards.size())).size());
+
+        benchmark("BoardItemRepository.findContentIdsByBoardIds  (보드 20개)", i ->
+                boardItemRepository.findContentIdsByBoardIds(page).size());
+    }
+
+    // ── ContentRepository ───────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("[성능] ContentRepository")
+    void benchmarkContentRepository() {
+        List<Long> ids = jdbcTemplate.queryForList(
+                "SELECT id FROM content ORDER BY id LIMIT 256", Long.class);
+        String keyword = jdbcTemplate.queryForObject(
+                "SELECT left(title, 6) FROM content WHERE length(title) >= 6 ORDER BY id LIMIT 1", String.class);
+
+        benchmark("ContentRepository.findContentIdsAfter  (커서 페이징, 256건)", i ->
+                contentRepository.findContentIdsAfter(0L, PageRequest.of(0, 256)).size());
+
+        benchmark("ContentRepository.findContentsByIds  (256건)", i ->
+                contentRepository.findContentsByIds(ids).size());
+
+        benchmark("ContentRepository.findContentSummaryById", i ->
+                contentRepository.findContentSummaryById(ids.get(i % ids.size())).isPresent() ? 1 : 0);
+
+        benchmark("ContentRepository.searchContentIdsByTitle  (pg_trgm, 20건)", i ->
+                contentRepository.searchContentIdsByTitle(keyword, 20, 0).size());
+    }
+
+    // ── Movie / Book / Music ────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("[성능] Movie / Book / Music 상세")
+    void benchmarkContentDetailRepositories() {
+        // JOINED 상속이라 자식 테이블의 PK는 id가 아니라 content_id다.
+        List<Long> movies = jdbcTemplate.queryForList(
+                "SELECT content_id FROM movie ORDER BY content_id LIMIT 200", Long.class);
+        List<Long> books = jdbcTemplate.queryForList(
+                "SELECT content_id FROM book ORDER BY content_id LIMIT 200", Long.class);
+        List<Long> musics = jdbcTemplate.queryForList(
+                "SELECT content_id FROM music ORDER BY content_id LIMIT 200", Long.class);
+
+        if (!movies.isEmpty()) {
+            benchmark("MovieRepository.findMovieDetailById", i ->
+                    movieRepository.findMovieDetailById(movies.get(i % movies.size())).isPresent() ? 1 : 0);
+        }
+        if (!books.isEmpty()) {
+            benchmark("BookRepository.findBookDetailById", i ->
+                    bookRepository.findBookDetailById(books.get(i % books.size())).isPresent() ? 1 : 0);
+        }
+        if (!musics.isEmpty()) {
+            benchmark("MusicRepository.findMusicDetailById", i ->
+                    musicRepository.findMusicDetailById(musics.get(i % musics.size())).isPresent() ? 1 : 0);
+        }
+    }
+
+    // ── UserRepository / UserVectorRepository ───────────────────────────────
+
+    @Test
+    @DisplayName("[성능] UserRepository, UserVectorRepository")
+    void benchmarkUserRepositories() {
+        Long userId = userWithMostLikes();
+        Map<String, Object> user = jdbcTemplate.queryForMap(
+                "SELECT login_id, email, nickname FROM users WHERE id = ?", userId);
+        String loginId = (String) user.get("login_id");
+        String email = (String) user.get("email");
+        String nickname = (String) user.get("nickname");
+
+        benchmark("UserRepository.findByIdAndDeletedAtIsNull", i ->
+                userRepository.findByIdAndDeletedAtIsNull(userId).isPresent() ? 1 : 0);
+
+        benchmark("UserRepository.findByLoginId  (로그인)", i ->
+                userRepository.findByLoginId(loginId).isPresent() ? 1 : 0);
+
+        benchmark("UserRepository.findByEmail", i ->
+                userRepository.findByEmail(email).isPresent() ? 1 : 0);
+
+        benchmark("UserRepository.existsByLoginId  (가입 중복 확인)", i ->
+                userRepository.existsByLoginId(loginId) ? 1 : 0);
+
+        benchmark("UserRepository.existsByEmail", i ->
+                userRepository.existsByEmail(email) ? 1 : 0);
+
+        benchmark("UserRepository.existsByNickname", i ->
+                userRepository.existsByNickname(nickname) ? 1 : 0);
+
+        String providerId = seedOauthUser();
+        benchmark("UserRepository.findByProviderAndProviderId  (소셜 로그인)", i ->
+                userRepository.findByProviderAndProviderId(AuthProvider.GOOGLE, providerId).isPresent() ? 1 : 0, "픽스처");
+
+        benchmark("UserVectorRepository.countStaleVectors  (재계산 밀림 지표)", i ->
+                (int) Math.min(userVectorRepository.countStaleVectors(Rating.LIKE), Integer.MAX_VALUE), "0 허용");
+    }
+
+    // ── UserRefreshTokenRepository ──────────────────────────────────────────
+
+    @Test
+    @DisplayName("[성능] UserRefreshTokenRepository")
+    void benchmarkUserRefreshTokenRepository() {
+        List<Long> userIds = seedRefreshTokens(5);
+        List<String> jtis = jdbcTemplate.queryForList(
+                "SELECT jti FROM user_refresh_tokens ORDER BY id LIMIT 400", String.class);
+
+        benchmark("UserRefreshTokenRepository.findByUserIdOrderByExpiresAtAsc", i ->
+                userRefreshTokenRepository.findByUserIdOrderByExpiresAtAsc(
+                        userIds.get(i % userIds.size())).size(), "픽스처");
+
+        benchmark("UserRefreshTokenRepository.findByJti  (토큰 재발급)", i ->
+                userRefreshTokenRepository.findByJti(jtis.get(i % jtis.size())).isPresent() ? 1 : 0, "픽스처");
+
+        // 쓰기 셋은 반복마다 다른 대상을 쓴다.
+        benchmark("UserRefreshTokenRepository.deleteByJti  (쓰기·롤백)", i -> {
+            userRefreshTokenRepository.deleteByJti(jtis.get(i % jtis.size()));
+            return 1;
+        }, "픽스처");
+
+        benchmark("UserRefreshTokenRepository.deleteByUserId  (로그아웃·쓰기·롤백)", i -> {
+            userRefreshTokenRepository.deleteByUserId(userIds.get(i % userIds.size()));
+            return 1;
+        }, "픽스처");
+
+        benchmark("UserRefreshTokenRepository.deleteByExpiresAtBefore  (스케줄러·쓰기·롤백)", i -> {
+            userRefreshTokenRepository.deleteByExpiresAtBefore(java.time.LocalDateTime.now().minusYears(10));
+            return 1;
+        }, "픽스처·0행");
     }
 
     // ── 픽스처 ──────────────────────────────────────────────────────────────
@@ -116,7 +309,6 @@ class RepositoryBenchmarkTest {
     /**
      * 좋아요를 가장 많이 가진 부하테스트 계정. 하드코딩한 id를 쓰면 안 된다 —
      * seed.sh는 매번 새 계정을 만들고 cleanup.sql이 지우므로 id가 고정되지 않는다.
-     * (실제로 {@code user_id = 1L}로 박혀 있었고, 그 사용자는 존재하지 않아 0행짜리 쿼리를 재고 있었다.)
      */
     private Long userWithMostLikes() {
         List<Long> ids = jdbcTemplate.queryForList("""
@@ -136,9 +328,52 @@ class RepositoryBenchmarkTest {
         return ids.get(0);
     }
 
-    private void requireRows(String countSql, String message) {
-        Long n = jdbcTemplate.queryForObject(countSql, Long.class);
-        assertThat(n).as(message + " — ./load-test/seed.sh 를 먼저 실행하세요").isNotNull().isPositive();
+    private List<Long> likedBoardIds(Long userId, int limit) {
+        List<Long> ids = jdbcTemplate.queryForList(
+                "SELECT board_id FROM board_feedback WHERE user_id = ? AND rating = 'LIKE' "
+                        + "ORDER BY board_id LIMIT ?", Long.class, userId, limit);
+        assertThat(ids).as("좋아요한 보드가 없습니다").isNotEmpty();
+        return ids;
+    }
+
+    /** 시더가 만들지 않는 USER_CUSTOM 보드. 롤백되지만 통계는 갱신해야 플래너가 제대로 고른다. */
+    private String seedUserCustomBoards(Long userId, int count) {
+        jdbcTemplate.update("""
+                INSERT INTO board (user_id, board_type, visibility, title, content_signature, like_count, created_at)
+                SELECT ?, 'USER_CUSTOM', 'PRIVATE', 'bench-custom-' || b.id, b.content_signature, 0,
+                       now() - (row_number() OVER (ORDER BY b.id) || ' minutes')::interval
+                  FROM board b
+                 WHERE b.board_type = 'AI_RECOMMEND' AND b.deleted_at IS NULL
+                 ORDER BY b.id
+                 LIMIT ?
+                """, userId, count);
+        jdbcTemplate.execute("ANALYZE board");   // ANALYZE는 트랜잭션 안에서 돌고 롤백과 함께 되돌아간다
+        return jdbcTemplate.queryForObject(
+                "SELECT content_signature FROM board WHERE user_id = ? AND board_type = 'USER_CUSTOM' "
+                        + "ORDER BY id LIMIT 1", String.class, userId);
+    }
+
+    private List<Long> seedRefreshTokens(int perUser) {
+        jdbcTemplate.update("""
+                INSERT INTO user_refresh_tokens (user_id, jti, expires_at)
+                SELECT u.id, 'bench-' || u.id || '-' || g, now() + (g || ' days')::interval
+                  FROM users u CROSS JOIN generate_series(1, ?) g
+                 WHERE u.login_id LIKE 'loadtest_u%'
+                """, perUser);
+        jdbcTemplate.execute("ANALYZE user_refresh_tokens");
+        return jdbcTemplate.queryForList(
+                "SELECT DISTINCT user_id FROM user_refresh_tokens ORDER BY user_id LIMIT 400", Long.class);
+    }
+
+    private String seedOauthUser() {
+        String providerId = "bench-google-1";
+        jdbcTemplate.update("""
+                INSERT INTO users (login_id, email, nickname, role, gender, login_type, provider, provider_id, created_at)
+                VALUES (NULL, 'bench-oauth@example.com', 'bench-oauth', 'USER', 'OTHER', 'OAUTH', 'GOOGLE', ?, now())
+                ON CONFLICT (provider, provider_id) DO NOTHING
+                """, providerId);
+        jdbcTemplate.execute("ANALYZE users");
+        return providerId;
     }
 
     // ── 하네스 ──────────────────────────────────────────────────────────────
@@ -146,23 +381,29 @@ class RepositoryBenchmarkTest {
     /** 한 스냅샷: [호출 수, DB 실행 시간(ms), 읽은 블록 수]. */
     private static final int CALLS = 0, EXEC_MS = 1, BLOCKS = 2;
 
-    private void benchmark(String label, IntSupplier call) {
+    private void benchmark(String label, IntUnaryOperator call) {
+        benchmark(label, call, "");
+    }
+
+    private void benchmark(String label, IntUnaryOperator call, String note) {
         // 1) 워밍업. 버린다. prepared statement 전환과 버퍼 캐시 적재가 여기서 끝난다.
         int rows = 0;
         for (int i = 0; i < WARMUP; i++) {
             entityManager.clear();
-            rows = call.getAsInt();
+            rows = call.applyAsInt(i);
         }
 
-        assertThat(rows)
-                .as("%s 가 0행을 반환합니다. 데이터가 없는 쿼리를 재면 '빠르다'는 결론만 나옵니다", label)
-                .isPositive();
+        if (!note.contains("0 허용") && !note.contains("0행")) {
+            assertThat(rows)
+                    .as("%s 가 0행을 반환합니다. 데이터가 없는 쿼리를 재면 '빠르다'는 결론만 나옵니다", label)
+                    .isPositive();
+        }
 
         // 2) 이 메서드가 어떤 queryid를 쓰는지 한 번 호출해서 알아낸다.
-        //    (페이징처럼 한 번의 호출이 쿼리 두 개를 내보내는 경우가 있다.)
+        //    (페이징이나 컬렉션 조회처럼 한 번의 호출이 쿼리 여러 개를 내보내는 경우가 있다.)
         Map<Long, double[]> before = snapshotAll();
         entityManager.clear();
-        call.getAsInt();
+        call.applyAsInt(WARMUP);
         Map<Long, double[]> after = snapshotAll();
 
         List<Long> targets = after.keySet().stream()
@@ -170,8 +411,7 @@ class RepositoryBenchmarkTest {
                 .collect(Collectors.toList());
 
         assertThat(targets)
-                .as("pg_stat_statements가 이 호출의 쿼리를 잡지 못했습니다. "
-                        + "확장이 설치되어 있는지(CREATE EXTENSION pg_stat_statements) 확인하세요")
+                .as("pg_stat_statements가 %s 의 쿼리를 잡지 못했습니다", label)
                 .isNotEmpty();
 
         int callsPerInvocation = (int) Math.round(targets.stream()
@@ -191,7 +431,7 @@ class RepositoryBenchmarkTest {
 
             double[] s0 = snapshot(targets);
             long t0 = System.nanoTime();
-            call.getAsInt();
+            call.applyAsInt(WARMUP + 1 + i);
             long t1 = System.nanoTime();
             double[] s1 = snapshot(targets);
 
@@ -207,11 +447,10 @@ class RepositoryBenchmarkTest {
         }
 
         assertThat(dbMs)
-                .as("쓸 수 있는 표본이 없습니다(오염 %d건). 앱이 같은 쿼리를 동시에 호출하고 있는지 확인하세요",
-                        contaminated)
+                .as("%s: 쓸 수 있는 표본이 없습니다(오염 %d건)", label, contaminated)
                 .isNotEmpty();
 
-        report(label, rows, callsPerInvocation, dbMs, javaMs, blocks, contaminated, targets);
+        report(label, rows, callsPerInvocation, dbMs, javaMs, blocks, contaminated, targets, note);
     }
 
     /** 전체 통계 스냅샷. 자기 자신(pg_stat_statements를 읽는 쿼리)은 뺀다. */
@@ -246,44 +485,65 @@ class RepositoryBenchmarkTest {
 
     private void report(String label, int rows, int callsPerInvocation,
                         List<Double> dbMs, List<Double> javaMs, double blocks,
-                        int contaminated, List<Long> targets) {
+                        int contaminated, List<Long> targets, String note) {
 
         double[] db = sorted(dbMs);
         double[] java = sorted(javaMs);
         int n = db.length;
 
-        String line = "─".repeat(96);
+        String line = "─".repeat(100);
         System.out.println("\n" + line);
-        System.out.printf("📊 %s%n", label);
+        System.out.printf("📊 %s%s%n", label, note.isEmpty() ? "" : "   [" + note + "]");
         System.out.println(line);
         System.out.printf("   표본 %d회 (워밍업 %d회 버림%s)   반환 %d행   호출당 쿼리 %d개   호출당 블록 %.1f%n",
                 n, WARMUP,
                 contaminated > 0 ? ", 오염 " + contaminated + "회 버림" : "",
                 rows, callsPerInvocation, blocks / n);
         System.out.println();
-        System.out.printf("   %-14s %9s %9s %9s %9s %9s %9s%n", "", "p50", "p95", "p99", "max", "평균", "min");
-        System.out.printf("   %-14s %8.3f㎳ %8.3f㎳ %8.3f㎳ %8.3f㎳ %8.3f㎳ %8.3f㎳%n", "DB 실행",
-                pct(db, 50), pct(db, 95), pct(db, 99), db[n - 1], mean(db), db[0]);
-        System.out.printf("   %-14s %8.3f㎳ %8.3f㎳ %8.3f㎳ %8.3f㎳ %8.3f㎳ %8.3f㎳%n", "Java 왕복",
-                pct(java, 50), pct(java, 95), pct(java, 99), java[n - 1], mean(java), java[0]);
-        System.out.printf("   %-14s %8.3f㎳ %8.3f㎳ %8.3f㎳%n", "└ 차이(JPA+JDBC)",
-                pct(java, 50) - pct(db, 50), pct(java, 95) - pct(db, 95), pct(java, 99) - pct(db, 99));
+        System.out.printf("   %-16s %9s %9s %9s %9s %9s%n", "", "p50", "p95", "p99", "max", "평균");
+        System.out.printf("   %-16s %8.3f㎳ %8.3f㎳ %8.3f㎳ %8.3f㎳ %8.3f㎳%n", "DB 실행",
+                pct(db, 50), pct(db, 95), pct(db, 99), db[n - 1], mean(db));
+        System.out.printf("   %-16s %8.3f㎳ %8.3f㎳ %8.3f㎳ %8.3f㎳ %8.3f㎳%n", "Java 왕복",
+                pct(java, 50), pct(java, 95), pct(java, 99), java[n - 1], mean(java));
 
-        System.out.println("\n   실행된 SQL (EXPLAIN 으로 계획을 보려면 이 텍스트를 쓸 것):");
+        System.out.println("\n   실행된 SQL:");
         for (Long id : targets) {
             String sql = jdbcTemplate.queryForObject(
-                    "SELECT left(regexp_replace(query, '\\s+', ' ', 'g'), 300) FROM pg_stat_statements WHERE queryid = ?",
+                    "SELECT left(regexp_replace(query, '\\s+', ' ', 'g'), 400) FROM pg_stat_statements WHERE queryid = ?",
                     String.class, id);
             System.out.printf("     [%d] %s%n", id, sql);
         }
         System.out.println(line);
-        System.out.println("""
-                   읽는 법
-                     · DB 실행 = 순수 DB 시간. 왕복·JPA 매핑이 빠져 있다.
-                     · 차이가 크면 병목은 쿼리가 아니라 엔티티 하이드레이션이나 N+1이다.
-                     · 단일 스레드 · 버퍼 캐시 적재 후 값이다. 운영 지연이 아니라 '쿼리 자체의 비용'이다.
-                     · 왜 비싼지는 여기서 안 나온다. 위 SQL을 EXPLAIN (ANALYZE, BUFFERS) 로 볼 것.
-                """);
+
+        RESULTS.add(new Result(label, rows, blocks / n,
+                pct(db, 50), pct(db, 95), pct(db, 99),
+                pct(java, 50), pct(java, 95), pct(java, 99), note));
+    }
+
+    /** 모든 테스트가 끝난 뒤 한 장으로 본다. 느린 것부터. */
+    @AfterAll
+    static void summary() {
+        if (RESULTS.isEmpty()) return;
+        List<Result> sorted = RESULTS.stream()
+                .sorted((a, b) -> Double.compare(b.dbP95, a.dbP95))
+                .toList();
+
+        String line = "═".repeat(132);
+        System.out.println("\n\n" + line);
+        System.out.printf("📋 리포지토리 메서드 성능 요약 — DB p95 내림차순 (%d개)%n", sorted.size());
+        System.out.println(line);
+        System.out.printf("%-62s %7s %9s %9s %9s %9s %9s%n",
+                "메서드", "행", "블록", "DB p50", "DB p95", "DB p99", "Java p95");
+        System.out.println("─".repeat(132));
+        for (Result r : sorted) {
+            System.out.printf("%-62s %7d %9.1f %8.3f㎳ %8.3f㎳ %8.3f㎳ %8.3f㎳%n",
+                    trim(r.method, 62), r.rows, r.blocks, r.dbP50, r.dbP95, r.dbP99, r.javaP95);
+        }
+        System.out.println(line);
+    }
+
+    private static String trim(String s, int max) {
+        return s.length() <= max ? s : s.substring(0, max - 1) + "…";
     }
 
     private static double[] sorted(List<Double> values) {
