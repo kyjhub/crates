@@ -212,6 +212,18 @@ scheduler:
   user-vector-stale-gauge:
     fixed-delay: 5m
     initial-delay: 30s
+  # 재계산이 유실된 취향 벡터를 뒤늦게 고치는 배치. 근거는 UserVectorBackfillService 주석 참고.
+  #
+  # grace: 방금 누른 좋아요는 아직 비동기 재계산이 도는 중일 수 있다. 그것까지 밀린 것으로 보면
+  #        백필이 진행 중인 작업을 쫓아다니며 같은 계산을 두 번 한다. 재계산 실측이 수십~수백 ms라
+  #        5분이면 넉넉하다.
+  # batch-size: 크게 망가졌을 때 한 번 돌기 시작한 배치가 몇 시간을 붙잡지 않도록 상한을 둔다.
+  #        못 고친 사람은 다음 주기가 이어받는다.
+  user-vector-backfill:
+    fixed-delay: 10m
+    initial-delay: 2m
+    grace: 5m
+    batch-size: 100
 
 logging:
   level:

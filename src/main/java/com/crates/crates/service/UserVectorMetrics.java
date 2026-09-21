@@ -38,6 +38,9 @@ public class UserVectorMetrics {
     /** 마지막 좋아요보다 벡터가 오래된 사용자 수. */
     private static final String STALE_USERS = "crates.user.vector.stale.users";
 
+    /** 백필이 뒤늦게 고친 횟수. result 태그로 성공/실패를 가른다. */
+    private static final String BACKFILL = "crates.user.vector.backfill";
+
     /** 조회 실패를 "밀린 사용자 0명"과 구분하기 위한 값. 아직 한 번도 계산하지 못한 상태도 이 값이다. */
     private static final double UNAVAILABLE = -1.0;
 
@@ -147,6 +150,22 @@ public class UserVectorMetrics {
             log.warn("밀린 취향 벡터 수를 조회하지 못했습니다.", e);
             staleUsers = UNAVAILABLE;
         }
+    }
+
+    /**
+     * 백필 1건.
+     *
+     * <p>좋아요로 촉발된 재계산과 <b>구분해서</b> 센다. 이 값이 꾸준히 올라간다는 것은 정상 경로가
+     * 자주 유실되고 있다는 뜻이라, {@code recalculation} 타이머만 봐서는 보이지 않는 신호다.
+     * 반대로 0이 이어지면 백필이 할 일이 없다는 뜻이고 그것이 정상이다.</p>
+     */
+    public void recordBackfill(boolean succeeded)
+    {
+        Counter.builder(BACKFILL)
+                .description("백필이 뒤늦게 고친 취향 벡터 수")
+                .tag("result", succeeded ? "updated" : "failed")
+                .register(registry)
+                .increment();
     }
 
     /** 재계산이 어떻게 끝났는지. 소요 시간만 보면 "빨리 끝났다"와 "아무것도 안 했다"가 섞인다. */
