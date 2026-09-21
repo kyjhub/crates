@@ -150,8 +150,17 @@ class RepositoryBenchmarkTest {
         benchmark("BoardRepository.findActiveByTypeAndSignature", i ->
                 boardRepository.findActiveByTypeAndSignature(BoardType.AI_RECOMMEND, aiSignature).isPresent() ? 1 : 0);
 
-        benchmark("BoardRepository.findMyBoards  (보관함 전체 탭, 20건)", i ->
-                boardRepository.findMyBoards(userId, Rating.LIKE, PageRequest.of(0, 20)).size());
+        // 보관함 전체 탭은 "내가 만든 것 + 내가 좋아요한 것"이다. 시더는 USER_CUSTOM 보드를
+        // 만들지 않으므로, 두 갈래가 모두 의미를 갖도록 먼저 픽스처를 깐다. 겹치는 보드도 만든다
+        // (내가 만들고 좋아요도 한 보드 — 중복 제거가 실제로 동작해야 하는 경우).
+        String customSignature = seedUserCustomBoards(userId, 2_000);
+        seedOwnBoardLikes(userId, 300);
+
+        benchmark("BoardRepository.findMyBoards  (보관함 전체 탭, 1페이지)", i ->
+                boardRepository.findMyBoards(userId, Rating.LIKE.name(), 20, 0, 20).size());
+
+        benchmark("BoardRepository.findMyBoards  (보관함 전체 탭, 11페이지)", i ->
+                boardRepository.findMyBoards(userId, Rating.LIKE.name(), 20, 200, 220).size());
 
         benchmark("BoardRepository.findLikeCountById", i ->
                 boardRepository.findLikeCountById(boards.get(i % boards.size())).isPresent() ? 1 : 0);
@@ -161,9 +170,6 @@ class RepositoryBenchmarkTest {
 
         benchmark("BoardRepository.decrementLikeCount  (쓰기·롤백)", i ->
                 boardRepository.decrementLikeCount(boards.get(i % boards.size())));
-
-        // 시더는 USER_CUSTOM 보드를 만들지 않는다. 트랜잭션 안에서 만들고 ANALYZE까지 돌린다.
-        String customSignature = seedUserCustomBoards(userId, 2_000);
 
         benchmark("BoardRepository.findCreatedByMe  (보관함 만든 것 탭, 20건)", i ->
                 boardRepository.findCreatedByMe(userId, PageRequest.of(0, 20)).size(), "픽스처");
@@ -368,6 +374,20 @@ class RepositoryBenchmarkTest {
         return jdbcTemplate.queryForObject(
                 "SELECT content_signature FROM board WHERE user_id = ? AND board_type = 'USER_CUSTOM' "
                         + "ORDER BY id LIMIT 1", String.class, userId);
+    }
+
+    /** 내가 만든 보드 일부에 내 좋아요를 단다. 전체 탭의 중복 제거가 실제로 갈라지게 하려면 필요하다. */
+    private void seedOwnBoardLikes(Long userId, int count) {
+        jdbcTemplate.update("""
+                INSERT INTO board_feedback (board_id, user_id, rating, created_at)
+                SELECT b.id, ?, 'LIKE', now() - ((b.id % 97) || ' hours')::interval
+                  FROM board b
+                 WHERE b.user_id = ? AND b.board_type = 'USER_CUSTOM' AND b.deleted_at IS NULL
+                 ORDER BY b.id
+                 LIMIT ?
+                ON CONFLICT DO NOTHING
+                """, userId, userId, count);
+        jdbcTemplate.execute("ANALYZE board_feedback");
     }
 
     private List<Long> seedRefreshTokens(int perUser) {
