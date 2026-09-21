@@ -205,6 +205,13 @@ app:
 scheduler:
   refresh-token-cleanup:
     cron: "0 0 4 * * *"
+  # 밀린 취향 벡터 수를 다시 세는 주기.
+  # 게이지 콜백에서 세지 않는 이유는 UserVectorStaleGaugeScheduler 주석 참고 —
+  # 스크레이프마다 O(전체 사용자) 쿼리가 도는 것을 막는다.
+  # 재계산이 밀렸는지는 분 단위로 알면 충분하다. 기동 직후에는 -1(아직 모름)로 보인다.
+  user-vector-stale-gauge:
+    fixed-delay: 5m
+    initial-delay: 30s
 
 logging:
   level:

@@ -38,21 +38,34 @@ public class UserVectorMetrics {
     /** 마지막 좋아요보다 벡터가 오래된 사용자 수. */
     private static final String STALE_USERS = "crates.user.vector.stale.users";
 
-    /** 조회 실패를 "밀린 사용자 0명"과 구분하기 위한 값. */
+    /** 조회 실패를 "밀린 사용자 0명"과 구분하기 위한 값. 아직 한 번도 계산하지 못한 상태도 이 값이다. */
     private static final double UNAVAILABLE = -1.0;
 
     private final MeterRegistry registry;
     private final UserVectorRepository userVectorRepository;
     private final Counter failures;
 
+    /**
+     * 마지막으로 계산해 둔 밀린 사용자 수.
+     *
+     * <p>스케줄러가 쓰고 게이지 콜백이 읽는다. 서로 다른 스레드라 volatile 이다.
+     * 최신성보다 일관성이 덜 중요한 값이라 그 이상은 필요 없다.</p>
+     */
+    private volatile double staleUsers = UNAVAILABLE;
+
     public UserVectorMetrics(MeterRegistry registry, UserVectorRepository userVectorRepository)
     {
         this.registry = registry;
         this.userVectorRepository = userVectorRepository;
 
-        Gauge.builder(STALE_USERS, this, UserVectorMetrics::staleUserCount)
+        // 게이지는 "마지막으로 계산해 둔 값"만 읽는다. 여기서 쿼리를 돌리면 안 된다 —
+        // Micrometer 게이지는 스크레이프마다 평가되므로, Prometheus가 15초마다 긁으면
+        // 쿼리도 15초마다 돈다. 비용이 O(전체 사용자)라 사용자가 늘수록 감시 장치가
+        // 부하 원인이 된다. 계산 주기와 관측 주기를 분리한다(refreshStaleUsers 참고).
+        Gauge.builder(STALE_USERS, this, m -> m.staleUsers)
                 .description("마지막 좋아요보다 취향 벡터가 오래된 사용자 수. "
-                        + "0이 아닌 상태가 이어지면 재계산이 밀렸거나 유실된 것이다.")
+                        + "0이 아닌 상태가 이어지면 재계산이 밀렸거나 유실된 것이다. "
+                        + "-1은 아직 계산하지 못했다는 뜻이다.")
                 .register(registry);
 
         // 기동 시점에 0으로 만들어 둔다. Micrometer는 첫 증가 때 지표를 만들기 때문에,
@@ -113,22 +126,26 @@ public class UserVectorMetrics {
     }
 
     /**
-     * 밀린 사용자 수.
+     * 밀린 사용자 수를 다시 센다. 스케줄러가 주기적으로 부른다.
      *
-     * <p>게이지 콜백은 지표를 읽는 스레드에서 돌기 때문에 예외가 새면 {@code /actuator/metrics}
-     * 전체가 깨진다. 그래서 삼키고 UNAVAILABLE을 돌려준다. 0으로 돌려주면 "정상"과 구분되지 않아
-     * 오히려 위험하다.</p>
+     * <p><b>여기가 유일한 계산 지점이다.</b> 게이지 콜백에서 세면 스크레이프마다 쿼리가 돌아,
+     * 사용자가 늘수록 감시 장치가 DB를 때린다. 계산은 이 메서드의 주기를 따르고 관측은 그 결과만
+     * 읽으므로, Prometheus가 아무리 자주 긁어도 DB 부하는 변하지 않는다.</p>
+     *
+     * <p>예외를 삼키고 UNAVAILABLE로 둔다. 실패를 0으로 두면 "밀린 사용자 없음"과 구분되지 않아
+     * 침묵하는 장애를 정상으로 읽게 된다. 스케줄러 스레드에서 예외가 새면 다음 주기가 돌지 않는
+     * 구현도 있어, 어느 쪽이든 여기서 막는 편이 안전하다.</p>
      */
-    private double staleUserCount()
+    public void refreshStaleUsers()
     {
         try
         {
-            return userVectorRepository.countStaleVectors(Rating.LIKE);
+            staleUsers = userVectorRepository.countStaleVectors(Rating.LIKE);
         }
         catch (Exception e)
         {
             log.warn("밀린 취향 벡터 수를 조회하지 못했습니다.", e);
-            return UNAVAILABLE;
+            staleUsers = UNAVAILABLE;
         }
     }
 
