@@ -60,7 +60,7 @@ CREATE INDEX idx_feedback_user_recent
 --   이 인덱스 추가 후 Index Scan using idx_board_signature_lookup  buffers 2  0.031ms
 --
 -- 보드 수에 비례해 나빠진다. 같은 조건(좋아요 100건/워커 20)에서 board가 620행 -> 3,128행이
--- 되자 처리량이 107 TPS -> 40 TPS로 떨어졌다. pg_stat_user_tables에도 board의
+-- 되자 처리량이 107 TPS -> 40 TPS로 떨어졌다. p   g_stat_user_tables에도 board의
 -- seq_scan 13,651회 / 순차로 읽은 행 700만으로 남아 있었다.
 --
 -- 유니크 제약(uk_board_ai_signature, uk_board_user_signature)은 건드리지 않는다.
