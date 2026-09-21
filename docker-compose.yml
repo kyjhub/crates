@@ -81,8 +81,28 @@ services:
       - "postgres"
       - "-c"
       - "shared_preload_libraries=pg_stat_statements"
-#    volumes:
-#      - ./postgres_data:/var/lib/postgresql/data # 데이터 영구 보존을 위한 바인드 마운트
+    # /dev/shm 크기. 도커 기본값이 64MB인데 PostgreSQL은 병렬 워커끼리 데이터를 주고받는
+    # 동적 공유 메모리(dynamic_shared_memory_type=posix)를 여기에 잡는다. 기본 공유 버퍼
+    # (shared_buffers)와는 별개라, 평소에는 멀쩡하다가 병렬 작업에서만 터진다.
+    #
+    #   ERROR: could not resize shared memory segment "/PostgreSQL.1945457568"
+    #          to 67145280 bytes: No space left on device        <- 67,145,280 ≈ 64MB
+    #
+    # 실제로 board_feedback 1,000만 행에 VACUUM을 돌리다 이 에러를 만났다. 메시지가 디스크를
+    # 가리켜서 원인을 찾기 어렵다 — 디스크는 797GB 남아 있었다.
+    #
+    # VACUUM만의 문제가 아니다. 병렬 쿼리가 켜져 있고(max_parallel_workers_per_gather=2,
+    # min_parallel_table_scan_size=8MB) 실제로 Parallel Seq Scan이 도는 것을 측정 중에 확인했다.
+    # 해시 조인의 공유 해시 테이블도 여기 들어가므로, 조인 입력이 커지면 어제까지 돌던 쿼리가
+    # 갑자기 죽는다.
+    #
+    # 상한일 뿐이라 실제로 쓰는 만큼만 점유한다(평소 1.1MB 수준).
+    shm_size: 1gb
+    volumes:
+      # 이름 있는 볼륨을 명시한다. 없으면 postgres 이미지의 VOLUME 선언 때문에 익명 볼륨이
+      # 붙는데, 그건 이름이 해시라 어느 컨테이너 것인지 알기 어렵고 컨테이너를 갈아끼울 때
+      # 딸려 오는지가 보장되지 않는다. 데이터가 걸린 마운트를 운에 맡기지 않는다.
+      - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
   # Elasticsearch: 전문 텍스트 검색 (Nori 분석기 포함)
