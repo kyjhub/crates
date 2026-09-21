@@ -340,6 +340,55 @@ class RepositoryBenchmarkTest {
                 (int) Math.min(userVectorRepository.countStaleVectors(Rating.LIKE), Integer.MAX_VALUE), "0 허용");
     }
 
+    /**
+     * 백필이 고칠 대상을 찾는 쿼리.
+     *
+     * <p>세 상태를 나눠 잰다. <b>정상(0명)이 가장 중요하다</b> — 10분마다 도는 것은 그 경우이고,
+     * "조건에 맞는 행이 없다"를 증명하려면 어떤 LIMIT 을 둬도 전부 봐야 하기 때문이다
+     * (countStaleVectors 에서 LIMIT 상한이 통하지 않았던 것과 같은 이유).</p>
+     *
+     * <p>전원 밀림은 최악의 경우다. {@code ORDER BY uv.updatedAt} 을 받쳐줄 인덱스가 없어
+     * 정렬 입력이 밀린 사용자 수만큼 커지는지 확인한다.</p>
+     */
+    @Test
+    @DisplayName("[성능] UserVectorRepository.findStaleUserIds — 백필 대상 조회")
+    void benchmarkFindStaleUserIds() {
+        int users = jdbcTemplate.queryForObject("SELECT count(*) FROM user_vector", Integer.class);
+
+        freshenAllVectors();
+        benchmark("findStaleUserIds  (밀린 사용자 0명 — 10분마다 도는 정상 경우)", i ->
+                staleUserIds(100).size(), "0 허용");
+
+        makeStale(100);
+        benchmark("findStaleUserIds  (밀린 사용자 100명 = LIMIT 과 같음)", i ->
+                staleUserIds(100).size());
+
+        makeStale(users);
+        benchmark("findStaleUserIds  (전원 밀림 " + users + "명 — 최악)", i ->
+                staleUserIds(100).size());
+    }
+
+    private List<Long> staleUserIds(int limit) {
+        return userVectorRepository.findStaleUserIds(
+                Rating.LIKE, java.time.LocalDateTime.now().minusMinutes(5), PageRequest.of(0, limit));
+    }
+
+    /** 전원을 최신 상태로. 밀린 사용자 0명이라는 출발점을 만든다. */
+    private void freshenAllVectors() {
+        jdbcTemplate.update("UPDATE user_vector SET updated_at = now()");
+        jdbcTemplate.execute("ANALYZE user_vector");
+    }
+
+    /** 좋아요가 있는 사용자 n명의 벡터를 과거로 돌려 밀린 상태로 만든다. */
+    private void makeStale(int count) {
+        jdbcTemplate.update("""
+                UPDATE user_vector SET updated_at = now() - interval '10 days'
+                 WHERE user_id IN (SELECT DISTINCT user_id FROM board_feedback
+                                    WHERE rating = 'LIKE' ORDER BY user_id LIMIT ?)
+                """, count);
+        jdbcTemplate.execute("ANALYZE user_vector");
+    }
+
     // ── UserRefreshTokenRepository ──────────────────────────────────────────
 
     @Test
