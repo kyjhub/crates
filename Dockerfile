@@ -1,4 +1,6 @@
-FROM openjdk:25-jdk-slim AS builder
+# openjdk 공식 이미지는 Docker Hub에서 내려갔다(openjdk:25-jdk-slim 이 resolve 되지 않는다).
+# build.gradle 의 toolchain 이 21 이므로 베이스도 21로 맞춘다 — 25로 빌드할 이유가 없었다.
+FROM eclipse-temurin:21-jdk AS builder
 WORKDIR /app
 
 # Gradle Wrapper 복사
@@ -14,7 +16,7 @@ RUN chmod +x ./gradlew
 RUN ./gradlew build -x test
 
 # 실행 스테이지
-FROM openjdk:25-jdk-slim
+FROM eclipse-temurin:21-jdk
 WORKDIR /app
 COPY --from=builder /app/build/libs/*.jar app.jar
 
