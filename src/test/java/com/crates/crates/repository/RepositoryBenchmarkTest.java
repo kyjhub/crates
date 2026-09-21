@@ -335,17 +335,16 @@ class RepositoryBenchmarkTest {
         String providerId = seedOauthUser();
         benchmark("UserRepository.findByProviderAndProviderId  (소셜 로그인)", i ->
                 userRepository.findByProviderAndProviderId(AuthProvider.GOOGLE, providerId).isPresent() ? 1 : 0, "픽스처");
-
-        benchmark("UserVectorRepository.countStaleVectors  (재계산 밀림 지표)", i ->
-                (int) Math.min(userVectorRepository.countStaleVectors(Rating.LIKE), Integer.MAX_VALUE), "0 허용");
     }
 
     /**
      * 백필이 고칠 대상을 찾는 쿼리.
      *
+     * <p>이 쿼리 하나가 백필 대상 조회와 {@code stale.users} 게이지를 겸한다.</p>
+     *
      * <p>세 상태를 나눠 잰다. <b>정상(0명)이 가장 중요하다</b> — 10분마다 도는 것은 그 경우이고,
      * "조건에 맞는 행이 없다"를 증명하려면 어떤 LIMIT 을 둬도 전부 봐야 하기 때문이다
-     * (countStaleVectors 에서 LIMIT 상한이 통하지 않았던 것과 같은 이유).</p>
+     * (같은 조건에 LIMIT 상한을 씌워봤지만 통하지 않았다 — 블록이 926에서 30,095로 늘었다).</p>
      *
      * <p>전원 밀림은 최악의 경우다. {@code ORDER BY uv.updatedAt} 을 받쳐줄 인덱스가 없어
      * 정렬 입력이 밀린 사용자 수만큼 커지는지 확인한다.</p>

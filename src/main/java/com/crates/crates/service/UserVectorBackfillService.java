@@ -84,11 +84,25 @@ public class UserVectorBackfillService {
      *
      * <p>사용자마다 예외를 잡고 계속 간다. 한 명이 망가졌다고 나머지를 포기할 이유가 없다.</p>
      *
+     * <p>대상 수를 {@code stale.users} 게이지에도 적는다. <b>고치기 전에</b> 적어야 한다 —
+     * 고친 뒤에 세면 언제나 0이다.</p>
+     *
      * @return 고친 인원
      */
     public int backfill() {
-        List<Long> staleUserIds = userVectorRepository.findStaleUserIds(
-                Rating.LIKE, LocalDateTime.now().minus(grace), PageRequest.of(0, batchSize));
+        List<Long> staleUserIds;
+        try {
+            staleUserIds = userVectorRepository.findStaleUserIds(
+                    Rating.LIKE, LocalDateTime.now().minus(grace), PageRequest.of(0, batchSize));
+        }
+        catch (Exception e) {
+            // 세지 못했으면 게이지를 0으로 두면 안 된다. "밀린 사용자 없음"과 구분되지 않는다.
+            metrics.markStaleUsersUnavailable();
+            throw e;
+        }
+
+        // 고치기 전에 적는다. 고친 뒤에 세면 언제나 0이라 지표가 아무 말도 하지 않는다.
+        metrics.recordStaleUsers(staleUserIds.size());
 
         if (staleUserIds.isEmpty()) {
             return 0;

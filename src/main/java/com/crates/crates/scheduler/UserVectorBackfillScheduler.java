@@ -11,6 +11,9 @@ import org.springframework.stereotype.Component;
  *
  * <p>왜 필요한지는 {@link UserVectorBackfillService} 주석 참고.</p>
  *
+ * <p><b>{@code stale.users} 게이지도 이 주기로 갱신된다.</b> 백필이 고칠 대상을 찾는 쿼리가
+ * 곧 그 게이지가 세려던 집합이라, 스케줄러를 따로 두면 거의 같은 스캔이 두 번 돈다.</p>
+ *
  * <p>{@code fixedDelay}를 쓴다. 배치가 오래 걸리면 다음 실행도 그만큼 밀려서, 재계산이 느린
  * 상황에 실행이 겹쳐 쌓이지 않는다.</p>
  *

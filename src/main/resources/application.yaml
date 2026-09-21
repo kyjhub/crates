@@ -205,13 +205,6 @@ app:
 scheduler:
   refresh-token-cleanup:
     cron: "0 0 4 * * *"
-  # 밀린 취향 벡터 수를 다시 세는 주기.
-  # 게이지 콜백에서 세지 않는 이유는 UserVectorStaleGaugeScheduler 주석 참고 —
-  # 스크레이프마다 O(전체 사용자) 쿼리가 도는 것을 막는다.
-  # 재계산이 밀렸는지는 분 단위로 알면 충분하다. 기동 직후에는 -1(아직 모름)로 보인다.
-  user-vector-stale-gauge:
-    fixed-delay: 5m
-    initial-delay: 30s
   # 재계산이 유실된 취향 벡터를 뒤늦게 고치는 배치. 근거는 UserVectorBackfillService 주석 참고.
   #
   # grace: 방금 누른 좋아요는 아직 비동기 재계산이 도는 중일 수 있다. 그것까지 밀린 것으로 보면
@@ -219,8 +212,11 @@ scheduler:
   #        5분이면 넉넉하다.
   # batch-size: 크게 망가졌을 때 한 번 돌기 시작한 배치가 몇 시간을 붙잡지 않도록 상한을 둔다.
   #        못 고친 사람은 다음 주기가 이어받는다.
+  #
+  # stale.users 게이지도 이 주기로 갱신된다. 대상을 찾는 쿼리가 곧 그 게이지가 세려던 집합이라
+  # 따로 세면 같은 스캔이 두 번 돈다. 게이지 신선도를 위해 10분이 아니라 5분으로 둔다.
   user-vector-backfill:
-    fixed-delay: 10m
+    fixed-delay: 5m
     initial-delay: 2m
     grace: 5m
     batch-size: 100

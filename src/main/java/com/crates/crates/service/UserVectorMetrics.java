@@ -1,7 +1,5 @@
 package com.crates.crates.service;
 
-import com.crates.crates.enumData.Rating;
-import com.crates.crates.repository.UserVectorRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.Gauge;
@@ -45,30 +43,31 @@ public class UserVectorMetrics {
     private static final double UNAVAILABLE = -1.0;
 
     private final MeterRegistry registry;
-    private final UserVectorRepository userVectorRepository;
     private final Counter failures;
 
     /**
      * 마지막으로 계산해 둔 밀린 사용자 수.
      *
-     * <p>스케줄러가 쓰고 게이지 콜백이 읽는다. 서로 다른 스레드라 volatile 이다.
+     * <p>백필 스케줄러가 쓰고 게이지 콜백이 읽는다. 서로 다른 스레드라 volatile 이다.
      * 최신성보다 일관성이 덜 중요한 값이라 그 이상은 필요 없다.</p>
      */
     private volatile double staleUsers = UNAVAILABLE;
 
-    public UserVectorMetrics(MeterRegistry registry, UserVectorRepository userVectorRepository)
+    public UserVectorMetrics(MeterRegistry registry)
     {
         this.registry = registry;
-        this.userVectorRepository = userVectorRepository;
 
-        // 게이지는 "마지막으로 계산해 둔 값"만 읽는다. 여기서 쿼리를 돌리면 안 된다 —
+        // 게이지는 "마지막으로 받아 적은 값"만 읽는다. 여기서 쿼리를 돌리면 안 된다 —
         // Micrometer 게이지는 스크레이프마다 평가되므로, Prometheus가 15초마다 긁으면
-        // 쿼리도 15초마다 돈다. 비용이 O(전체 사용자)라 사용자가 늘수록 감시 장치가
-        // 부하 원인이 된다. 계산 주기와 관측 주기를 분리한다(refreshStaleUsers 참고).
+        // 쿼리도 15초마다 돈다. 비용이 min(O(전체 사용자), O(전체 좋아요))라 서비스가
+        // 자랄수록 감시 장치가 부하 원인이 된다.
+        //
+        // 값을 넣어주는 쪽은 백필이다(UserVectorBackfillService). 백필이 고칠 대상을 찾는
+        // 쿼리가 곧 이 게이지가 세려던 그 집합이라, 따로 세면 같은 스캔을 두 번 한다.
         Gauge.builder(STALE_USERS, this, m -> m.staleUsers)
-                .description("마지막 좋아요보다 취향 벡터가 오래된 사용자 수. "
-                        + "0이 아닌 상태가 이어지면 재계산이 밀렸거나 유실된 것이다. "
-                        + "-1은 아직 계산하지 못했다는 뜻이다.")
+                .description("마지막 좋아요보다 취향 벡터가 오래된 사용자 수(백필 batch-size 에서 잘림). "
+                        + "백필이 매 주기 0으로 되돌리므로 0이 정상이고, 0이 아닌 상태가 이어지면 "
+                        + "백필이 따라잡지 못하고 있다는 뜻이다. -1은 아직 세지 못했다는 뜻이다.")
                 .register(registry);
 
         // 기동 시점에 0으로 만들어 둔다. Micrometer는 첫 증가 때 지표를 만들기 때문에,
@@ -129,27 +128,28 @@ public class UserVectorMetrics {
     }
 
     /**
-     * 밀린 사용자 수를 다시 센다. 스케줄러가 주기적으로 부른다.
+     * 이번 주기에 발견한 밀린 사용자 수를 게이지에 적는다.
      *
-     * <p><b>여기가 유일한 계산 지점이다.</b> 게이지 콜백에서 세면 스크레이프마다 쿼리가 돌아,
-     * 사용자가 늘수록 감시 장치가 DB를 때린다. 계산은 이 메서드의 주기를 따르고 관측은 그 결과만
-     * 읽으므로, Prometheus가 아무리 자주 긁어도 DB 부하는 변하지 않는다.</p>
+     * <p>백필이 대상을 찾은 <b>직후</b>, 고치기 전에 부른다. 고친 뒤에 세면 언제나 0이라
+     * 지표가 아무 말도 하지 않는다.</p>
      *
-     * <p>예외를 삼키고 UNAVAILABLE로 둔다. 실패를 0으로 두면 "밀린 사용자 없음"과 구분되지 않아
-     * 침묵하는 장애를 정상으로 읽게 된다. 스케줄러 스레드에서 예외가 새면 다음 주기가 돌지 않는
-     * 구현도 있어, 어느 쪽이든 여기서 막는 편이 안전하다.</p>
+     * <p>값이 백필의 {@code batch-size}에서 잘린다는 점에 주의. 100이면 "100명 이상"이라는
+     * 뜻이다. 이 지표로 하는 판단은 "0이냐 아니냐"뿐이라 문제되지 않는다.</p>
+     *
+     * <p><b>0이라고 해서 정상 경로가 멀쩡하다는 뜻은 아니다.</b> 백필이 매 주기 0으로 되돌리기
+     * 때문이다. 정상 경로가 깨졌는지는 {@code backfill} 카운터로 본다 — 그쪽이 꾸준히 오르는데
+     * 이 게이지가 0이면 "깨졌지만 백필이 막고 있다"는 상태다. 둘 다 0이 아니면 백필도
+     * 따라잡지 못하고 있다는 뜻이고 그때가 심각하다.</p>
      */
-    public void refreshStaleUsers()
+    public void recordStaleUsers(int count)
     {
-        try
-        {
-            staleUsers = userVectorRepository.countStaleVectors(Rating.LIKE);
-        }
-        catch (Exception e)
-        {
-            log.warn("밀린 취향 벡터 수를 조회하지 못했습니다.", e);
-            staleUsers = UNAVAILABLE;
-        }
+        staleUsers = count;
+    }
+
+    /** 세는 데 실패했다. 0으로 두면 "밀린 사용자 없음"과 구분되지 않아 침묵하는 장애를 정상으로 읽게 된다. */
+    public void markStaleUsersUnavailable()
+    {
+        staleUsers = UNAVAILABLE;
     }
 
     /**
