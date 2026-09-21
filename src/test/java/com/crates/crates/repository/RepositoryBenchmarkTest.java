@@ -3,6 +3,7 @@ package com.crates.crates.repository;
 import com.crates.crates.enumData.AuthProvider;
 import com.crates.crates.enumData.BoardType;
 import com.crates.crates.enumData.Rating;
+import com.crates.crates.entity.board.Board;
 import com.crates.crates.enumData.Visibility;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -150,17 +151,8 @@ class RepositoryBenchmarkTest {
         benchmark("BoardRepository.findActiveByTypeAndSignature", i ->
                 boardRepository.findActiveByTypeAndSignature(BoardType.AI_RECOMMEND, aiSignature).isPresent() ? 1 : 0);
 
-        // 보관함 전체 탭은 "내가 만든 것 + 내가 좋아요한 것"이다. 시더는 USER_CUSTOM 보드를
-        // 만들지 않으므로, 두 갈래가 모두 의미를 갖도록 먼저 픽스처를 깐다. 겹치는 보드도 만든다
-        // (내가 만들고 좋아요도 한 보드 — 중복 제거가 실제로 동작해야 하는 경우).
         String customSignature = seedUserCustomBoards(userId, 2_000);
         seedOwnBoardLikes(userId, 300);
-
-        benchmark("BoardRepository.findMyBoards  (보관함 전체 탭, 1페이지)", i ->
-                boardRepository.findMyBoards(userId, Rating.LIKE.name(), 20, 0, 20).size());
-
-        benchmark("BoardRepository.findMyBoards  (보관함 전체 탭, 11페이지)", i ->
-                boardRepository.findMyBoards(userId, Rating.LIKE.name(), 20, 200, 220).size());
 
         benchmark("BoardRepository.findLikeCountById", i ->
                 boardRepository.findLikeCountById(boards.get(i % boards.size())).isPresent() ? 1 : 0);
@@ -176,6 +168,72 @@ class RepositoryBenchmarkTest {
 
         benchmark("BoardRepository.findActiveUserBoardBySignature", i ->
                 boardRepository.findActiveUserBoardBySignature(userId, customSignature).isPresent() ? 1 : 0, "픽스처");
+    }
+
+    /**
+     * 보관함 "전체" 탭 — 재작성 전후를 같은 실행 안에서 나란히 잰다.
+     *
+     * <p>before/after를 따로 돌리면 뒤에 도는 쪽이 따뜻한 캐시의 덕을 본다. 같은 트랜잭션에서
+     * 두 쿼리를 모두 부르면 그 차이가 원천적으로 없다.</p>
+     *
+     * <p>기존 쿼리는 운영 코드에서 지웠으므로 여기서 네이티브로 되살린다. 비교를 재현할 수
+     * 있게 하려고 남기는 것이지, 되돌리려는 것이 아니다.</p>
+     *
+     * <p><b>"내가 만든 보드" 수가 결과를 좌우한다.</b> 재작성 후 남는 비용은 그 갈래이고,
+     * idx_board_owner가 (user_id, board_type)이라 created_at 순서를 주지 못해 내가 만든 보드를
+     * 전부 읽고 정렬하기 때문이다. 비용이 O(내가 만든 보드 수)라 규모를 바꿔가며 잰다.</p>
+     */
+    @Test
+    @DisplayName("[성능] 보관함 전체 탭 — 내가 만든 보드 2,000개")
+    void benchmarkMyBoardsWith2kOwned() {
+        benchmarkMyBoards(2_000);
+    }
+
+    @Test
+    @DisplayName("[성능] 보관함 전체 탭 — 내가 만든 보드 20,000개")
+    void benchmarkMyBoardsWith20kOwned() {
+        benchmarkMyBoards(20_000);
+    }
+
+    private void benchmarkMyBoards(int ownedBoards) {
+        Long userId = userWithMostLikes();
+        int overlap = ownedBoards * 15 / 100;   // 만든 보드의 15%는 내가 좋아요도 했다
+
+        seedUserCustomBoards(userId, ownedBoards);
+        seedOwnBoardLikes(userId, overlap);
+
+        String label = " (만든 보드 " + ownedBoards + "개)";
+
+        benchmark("findMyBoards 기존 JPQL  1페이지" + label, i ->
+                legacyMyBoards(userId, 20, 0).size());
+
+        benchmark("findMyBoards UNION ALL  1페이지" + label, i ->
+                boardRepository.findMyBoards(userId, Rating.LIKE.name(), 20, 0, 20).size());
+
+        benchmark("findMyBoards 기존 JPQL  11페이지" + label, i ->
+                legacyMyBoards(userId, 20, 200).size());
+
+        benchmark("findMyBoards UNION ALL  11페이지" + label, i ->
+                boardRepository.findMyBoards(userId, Rating.LIKE.name(), 20, 200, 220).size());
+    }
+
+    /** 재작성 전 JPQL이 Hibernate를 거쳐 나가던 SQL 그대로. */
+    @SuppressWarnings("unchecked")
+    private List<Board> legacyMyBoards(Long userId, int size, int offset) {
+        return entityManager.createNativeQuery("""
+                select b1_0.* from board b1_0
+                 left join users u1_0 on u1_0.id = b1_0.user_id
+                 left join board_feedback bf1_0
+                        on bf1_0.board_id = b1_0.id and bf1_0.user_id = ?1 and bf1_0.rating = ?2
+                 where b1_0.deleted_at is null and (u1_0.id = ?1 or bf1_0.id is not null)
+                 order by coalesce(bf1_0.created_at, b1_0.created_at) desc, b1_0.id desc
+                 fetch first ?3 rows only offset ?4 rows
+                """, Board.class)
+                .setParameter(1, userId)
+                .setParameter(2, Rating.LIKE.name())
+                .setParameter(3, size)
+                .setParameter(4, offset)
+                .getResultList();
     }
 
     // ── BoardItemRepository ─────────────────────────────────────────────────
@@ -376,18 +434,32 @@ class RepositoryBenchmarkTest {
                         + "ORDER BY id LIMIT 1", String.class, userId);
     }
 
-    /** 내가 만든 보드 일부에 내 좋아요를 단다. 전체 탭의 중복 제거가 실제로 갈라지게 하려면 필요하다. */
+    /**
+     * 내가 만든 보드 일부에 내 좋아요를 단다. 전체 탭의 중복 제거가 실제로 갈라지게 하려면 필요하다.
+     *
+     * <p><b>겹치는 보드를 최신순 앞쪽에 몰면 안 된다.</b> 처음에는 {@code ORDER BY b.id LIMIT n}으로
+     * 골랐는데, 만든 시각이 id 역순이라 결과적으로 "가장 최근 보드 n개"가 전부 겹침이 됐다.
+     * 그러면 "만든 것" 갈래가 앞에서부터 n개를 헛돌고서야 첫 행을 찾는다 — 실측에서 149블록짜리
+     * 계획이 1,206블록으로 나왔다. 전체에 고르게 흩어야 분포가 현실에 가깝다.</p>
+     */
     private void seedOwnBoardLikes(Long userId, int count) {
         jdbcTemplate.update("""
                 INSERT INTO board_feedback (board_id, user_id, rating, created_at)
-                SELECT b.id, ?, 'LIKE', now() - ((b.id % 97) || ' hours')::interval
-                  FROM board b
-                 WHERE b.user_id = ? AND b.board_type = 'USER_CUSTOM' AND b.deleted_at IS NULL
-                 ORDER BY b.id
-                 LIMIT ?
+                SELECT id, ?, 'LIKE', now() - ((id % 97) || ' hours')::interval
+                  FROM (SELECT b.id, row_number() OVER (ORDER BY b.created_at DESC) AS rn
+                          FROM board b
+                         WHERE b.user_id = ? AND b.board_type = 'USER_CUSTOM' AND b.deleted_at IS NULL) t
+                 WHERE rn % GREATEST(? / GREATEST(?, 1), 1) = 0
                 ON CONFLICT DO NOTHING
-                """, userId, userId, count);
+                """, userId, userId, countOwned(userId), count);
         jdbcTemplate.execute("ANALYZE board_feedback");
+    }
+
+    private int countOwned(Long userId) {
+        Integer n = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM board WHERE user_id = ? AND board_type = 'USER_CUSTOM' AND deleted_at IS NULL",
+                Integer.class, userId);
+        return n == null ? 0 : n;
     }
 
     private List<Long> seedRefreshTokens(int perUser) {
