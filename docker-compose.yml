@@ -141,25 +141,32 @@ services:
     restart: unless-stopped
 
   # Backend Server (Spring Boot)
-#  backend:
-#    build: .
-#    container_name: backend_server
-#    ports:
-#      - "8080:8080"
-#    env_file:
-#      - crates_server.env
-#    environment:
-#      # 로컬 호스트(localhost) 설정들을 도커 네트워크 내 서비스 이름으로 오버라이드
-#      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/crates
-#      - SPRING_DATA_REDIS_HOST=redis
-#      - AI_VECTORSTORE_QDRANT_HOST=qdrant
-#      - STORAGE_ENDPOINT=http://minio:9000
-#    depends_on:
-#      - postgres
-#      - redis
-#      - minio
-#      - qdrant
-#    restart: unless-stopped
+  # 코드를 바꾼 뒤에는: docker compose --env-file crates_server.env up -d --build backend
+  # (start/restart만 하면 옛 이미지로 뜬다)
+  # IntelliJ에서 앱을 띄울 때는 이 컨테이너를 먼저 멈출 것 — 둘 다 8080을 쓴다.
+  backend:
+    build: .
+    container_name: backend_server
+    # 부하테스트 수치를 재현하기 위한 자원 상한. 이게 없으면 호스트 CPU를 전부 쓰고,
+    # 같은 설정으로 재도 실행마다 값이 달라진다(load-test/README.md, docs 2장).
+    cpus: '4'
+    mem_limit: 3g
+    ports:
+      - "8080:8080"
+    env_file:
+      - crates_server.env
+    environment:
+      # 로컬 호스트(localhost) 설정들을 도커 네트워크 내 서비스 이름으로 오버라이드
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/crates
+      - SPRING_DATA_REDIS_HOST=redis
+      - AI_VECTORSTORE_QDRANT_HOST=qdrant
+      - STORAGE_ENDPOINT=http://minio:9000
+    depends_on:
+      - postgres
+      - redis
+      - minio
+      - qdrant
+    restart: unless-stopped
 
 volumes:
   postgres_data:
