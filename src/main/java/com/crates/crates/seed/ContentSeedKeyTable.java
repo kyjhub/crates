@@ -24,7 +24,8 @@ import java.util.Map;
  * 연결된다. 로더가 적재를 마치면 {@link #drop()}으로 지운다.</p>
  *
  * <p>FK는 걸지 않는다. V1~V3가 방금 넣은 content.id만 담고 적재가 끝나면 사라지는 테이블이다.
- * 적재가 실패해 남은 테이블은 init 프로필의 import.sql이 지운다(엔티티가 아니라 ddl-auto가 모른다).</p>
+ * 적재가 실패하면 남는데, 그러면 다음 기동의 로더가 이 테이블로 다시 적재하고 지운다.
+ * {@code docker compose down -v}로 처음부터 시작하면 DB와 함께 사라진다.</p>
  */
 @Component
 @RequiredArgsConstructor

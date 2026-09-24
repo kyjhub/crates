@@ -14,6 +14,11 @@ services:
 #    volumes:
 #      - ./minio_data:/data            # 중요: 컨테이너가 꺼져도 이미지가 날아가지 않도록 로컬 폴더와 연결
     command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
     restart: unless-stopped
 
   # MinIO 초기화: 버킷 생성 + 익명 읽기 허용 (한 번 실행하고 종료되는 일회성 컨테이너)
@@ -52,6 +57,12 @@ services:
     ports:
       - "6333:6333"  # REST API 통신 및 웹 대시보드(UI) 접속용 포트
       - "6334:6334"  # gRPC 통신용 포트 (대용량 데이터를 더 빠르게 처리할 때 사용)
+    # 이미지에 curl도 wget도 없다. bash의 /dev/tcp로 포트가 열렸는지만 본다.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 #    volumes:
 #      - ./qdrant_data:/qdrant/storage  # 데이터 영구 저장을 위한 로컬 폴더 연결
     restart: unless-stopped
@@ -81,6 +92,13 @@ services:
       - "postgres"
       - "-c"
       - "shared_preload_libraries=pg_stat_statements"
+    # depends_on은 컨테이너 시작만 보장한다. Flyway가 첫 쿼리를 던지는 시점에 DB가
+    # 아직 준비되지 않았으면 앱이 그대로 죽는다. 그래서 준비 완료를 조건으로 건다.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d crates"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
     # /dev/shm 크기. 도커 기본값이 64MB인데 PostgreSQL은 병렬 워커끼리 데이터를 주고받는
     # 동적 공유 메모리(dynamic_shared_memory_type=posix)를 여기에 잡는다. 기본 공유 버퍼
     # (shared_buffers)와는 별개라, 평소에는 멀쩡하다가 병렬 작업에서만 터진다.
@@ -138,35 +156,68 @@ services:
     container_name: redis_server
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
     restart: unless-stopped
 
   # Backend Server (Spring Boot)
+  #
+  # 부하테스트에서 재현 가능한 수치를 얻으려면 앱에 자원 상한이 있어야 한다. 네이티브로 띄우면
+  # 앱이 10코어를 다 쓸 수도, 부하 생성기에 뺏길 수도 있어서 같은 코드를 두 번 재도 값이 다르다.
+  #
+  # 다만 상한을 걸어도 "운영에서 기대할 수치"가 되지는 않는다. 부하 생성기가 여전히 같은
+  # 기계에 있어서다. 자세한 것은 docs/load-test-and-metrics.md 2장.
+  #
   # 코드를 바꾼 뒤에는: docker compose --env-file crates_server.env up -d --build backend
   # (start/restart만 하면 옛 이미지로 뜬다)
   # IntelliJ에서 앱을 띄울 때는 이 컨테이너를 먼저 멈출 것 — 둘 다 8080을 쓴다.
   backend:
     build: .
     container_name: backend_server
-    # 부하테스트 수치를 재현하기 위한 자원 상한. 이게 없으면 호스트 CPU를 전부 쓰고,
-    # 같은 설정으로 재도 실행마다 값이 달라진다(load-test/README.md, docs 2장).
-    cpus: '4'
-    mem_limit: 3g
     ports:
       - "8080:8080"
     env_file:
       - crates_server.env
     environment:
-      # 로컬 호스트(localhost) 설정들을 도커 네트워크 내 서비스 이름으로 오버라이드
+      # 시작 벡터의 일일 갱신 기준을 한국 시간 자정으로 맞춘다.
+      - TZ=Asia/Seoul
+      # 컨테이너 안에서 localhost는 자기 자신이다. 도커 네트워크의 서비스 이름으로 바꾼다.
       - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/crates
       - SPRING_DATA_REDIS_HOST=redis
       - AI_VECTORSTORE_QDRANT_HOST=qdrant
       - STORAGE_ENDPOINT=http://minio:9000
+      # STORAGE_BUCKET_URL은 덮지 않는다. 이건 서버가 접속하는 주소가 아니라
+      # 브라우저에게 내려주는 이미지 URL이라, minio:9000으로 바꾸면 프론트에서 전부 깨진다.
+      #
+      # AI_SERVER_BASE_URL도 그대로 둔다(Tailscale IP). 검색어 임베딩은 스텁 없이 실제로 호출하므로
+      # 컨테이너에서 닿아야 한다. Docker Desktop은 호스트 경유로 나가서 닿는다(2026-09-24 ping 200).
+      # 안 닿으면 검색이 AiServerException으로 실패한다. 확인:
+      #   docker run --rm --network crates_default curlimages/curl -s http://<AI 서버>:8000/api/v1/ping
     depends_on:
-      - postgres
-      - redis
-      - minio
-      - qdrant
-    restart: unless-stopped
+      # 준비 완료까지 기다린다. 단순 depends_on은 컨테이너 시작만 보장해서,
+      # Flyway가 첫 쿼리를 던질 때 DB가 아직 안 떠 있으면 앱이 그대로 죽는다.
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      # 버킷이 없으면 시딩 중 이미지 업로드가 전부 실패한다.
+      minio-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 3g
+    # 자동 재시작을 걸지 않는다. 마이그레이션이 실패하면 4분짜리 시딩을 무한 반복하게 된다.
+    # 개발 중에는 실패를 보고 고치는 편이 낫다.
+    restart: "no"
 
 volumes:
   postgres_data:

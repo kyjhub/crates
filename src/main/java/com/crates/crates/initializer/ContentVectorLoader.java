@@ -38,7 +38,7 @@ import java.util.Set;
  * 않으므로 그때는 {@code ai.vectorstore.qdrant.load.recreate=true}로 강제한다.</p>
  *
  * <p>매핑 테이블을 지운 뒤에는 벡터만 다시 적재할 수 없다. 새 모델의 CSV로 바꿨다면 RDB부터
- * 다시 시딩해야 한다(init → flyway-test). 그 상태에서 다시 적재가 필요하다고 판단되면
+ * 다시 시딩해야 한다({@code docker compose down -v} 후 기동). 그 상태에서 다시 적재가 필요하다고 판단되면
  * 기존 컬렉션을 건드리지 않고 오류 로그만 남긴다 — 지우고 나면 채울 방법이 없기 때문이다.</p>
  */
 @Slf4j
@@ -89,7 +89,7 @@ public class ContentVectorLoader implements ApplicationRunner {
 
         if (!seedKeyTable.exists()) {
             log.error("콘텐츠 벡터를 다시 적재해야 하지만 시딩 전용 매핑 테이블({})이 이미 지워졌습니다. "
-                    + "기존 컬렉션은 그대로 둡니다. init → flyway-test 프로필로 RDB부터 다시 시딩하세요.",
+                    + "기존 컬렉션은 그대로 둡니다. docker compose down -v 후 다시 기동해 RDB부터 시딩하세요.",
                     ContentSeedKeyTable.TABLE);
             return;
         }
