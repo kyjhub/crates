@@ -1,6 +1,7 @@
 package com.crates.crates.repository;
 
 import com.crates.crates.DTO.ContentQueryDto;
+import com.crates.crates.DTO.ContentSourceKeyDto;
 import com.crates.crates.entity.contents.Content;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -8,6 +9,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -17,6 +19,15 @@ public interface ContentRepository extends JpaRepository<Content, Long> {
     // 대량의 content ID를 메모리에 한 번에 올리지 않도록 마지막 ID 이후의 데이터만 배치 조회한다.
     @Query("SELECT c.id FROM Content c WHERE c.id > :afterId ORDER BY c.id")
     List<Long> findContentIdsAfter(@Param("afterId") Long afterId, Pageable pageable);
+
+    /**
+     * 원본 id(source_key)로 content.id를 찾는다. 벡터 CSV 적재에 쓴다.
+     * (dtype, source_key) 유니크 인덱스(V0_1)를 탄다. 없는 키는 결과에서 빠진다.
+     */
+    @Query("SELECT new com.crates.crates.DTO.ContentSourceKeyDto(c.id, c.sourceKey) " +
+            "FROM Content c WHERE c.dtype = :dtype AND c.sourceKey IN :sourceKeys")
+    List<ContentSourceKeyDto> findIdsBySourceKeys(@Param("dtype") String dtype,
+                                                  @Param("sourceKeys") Collection<String> sourceKeys);
 
     @Query("SELECT new com.crates.crates.DTO.ContentQueryDto(" +
             "c.id, c.title, c.s3ObjectKey, c.imageExtension, c.dtype, c.releaseYear) " +

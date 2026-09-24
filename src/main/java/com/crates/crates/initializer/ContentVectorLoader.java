@@ -1,7 +1,7 @@
 package com.crates.crates.initializer;
 
+import com.crates.crates.DTO.ContentSourceKeyDto;
 import com.crates.crates.repository.ContentRepository;
-import com.crates.crates.seed.ContentSeedKeyTable;
 import com.crates.crates.seed.ContentVectorCsv;
 import com.crates.crates.seed.ContentVectorFiles;
 import com.crates.crates.service.ContentVectorRecord;
@@ -20,13 +20,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * AI 서버가 만든 콘텐츠 벡터 CSV를 Qdrant content_vector 컬렉션에 적재한다.
  *
- * <p>CSV의 id는 원본 데이터셋의 id라서, V1~V3가 남긴 시딩 전용 매핑 테이블({@link ContentSeedKeyTable})로
- * content.id를 찾아 point id로 쓴다. 적재를 마치고 point 수가 content 수와 맞으면 그 테이블을 지운다.
- * 맞지 않으면 원인을 볼 수 있게 남겨둔다.</p>
+ * <p>CSV의 id는 원본 데이터셋의 id라서, V1~V3가 content.source_key에 남긴 값으로 content.id를 찾아
+ * point id로 쓴다. 이 짝이 RDB에 남아 있으므로 Qdrant가 비워져도(볼륨 없음) 재기동만 하면
+ * CSV에서 다시 적재된다 — RDB를 다시 시딩할 필요가 없다.</p>
  *
  * <p><b>언제 적재하는가</b> — 매 기동마다 18만 건을 다시 넣지 않도록, 아래가 모두 맞으면 건너뛴다.</p>
  * <ul>
@@ -36,10 +37,6 @@ import java.util.Set;
  * <p>다시 적재할 때는 컬렉션을 지우고 만든다. point id가 content.id라서, 남겨두면 RDB 재시딩 전의
  * point가 엉뚱한 콘텐츠에 매달린 채 남는다. 같은 행 수로 순서만 바뀐 재시딩은 위 조건으로 잡히지
  * 않으므로 그때는 {@code ai.vectorstore.qdrant.load.recreate=true}로 강제한다.</p>
- *
- * <p>매핑 테이블을 지운 뒤에는 벡터만 다시 적재할 수 없다. 새 모델의 CSV로 바꿨다면 RDB부터
- * 다시 시딩해야 한다({@code docker compose down -v} 후 기동). 그 상태에서 다시 적재가 필요하다고 판단되면
- * 기존 컬렉션을 건드리지 않고 오류 로그만 남긴다 — 지우고 나면 채울 방법이 없기 때문이다.</p>
  */
 @Slf4j
 @Component
@@ -50,7 +47,6 @@ public class ContentVectorLoader implements ApplicationRunner {
     private final ContentRepository contentRepository;
     private final ContentVectorService contentVectorService;
     private final ContentVectorFiles vectorFiles;
-    private final ContentSeedKeyTable seedKeyTable;
 
     @Value("${ai.server.embedding-dimension}")
     private int vectorDimension;
@@ -79,18 +75,9 @@ public class ContentVectorLoader implements ApplicationRunner {
         Set<String> modelVersions = modelVersionsInFiles();
 
         if (!forceRecreate && isAlreadyLoaded(contentCount, modelVersions)) {
-            // 이미 적재된 상태에서 매핑 테이블이 남아 있으면(같은 데이터로 RDB만 다시 시딩한 경우) 지금 지운다.
-            dropSeedKeyTableIfExists();
             // run-measure.sh가 "seed completed"로 적재 완료를 판단한다. 건너뛸 때도 같은 문구를 남긴다.
             log.info("Qdrant content vector seed completed (이미 적재됨): contentCount={}, modelVersions={}",
                     contentCount, modelVersions);
-            return;
-        }
-
-        if (!seedKeyTable.exists()) {
-            log.error("콘텐츠 벡터를 다시 적재해야 하지만 시딩 전용 매핑 테이블({})이 이미 지워졌습니다. "
-                    + "기존 컬렉션은 그대로 둡니다. docker compose down -v 후 다시 기동해 RDB부터 시딩하세요.",
-                    ContentSeedKeyTable.TABLE);
             return;
         }
 
@@ -102,24 +89,13 @@ public class ContentVectorLoader implements ApplicationRunner {
         }
 
         long points = contentVectorService.countPoints();
-        if (points == contentCount) {
-            dropSeedKeyTableIfExists();
-        } else {
+        if (points != contentCount) {
             // V1~V3가 벡터 있는 콘텐츠만 넣으므로 둘은 같아야 한다. 다르면 시딩과 적재가 다른 파일을 본 것이다.
-            // 원인을 추적할 수 있게 매핑 테이블은 남겨둔다.
             log.warn("content 수와 point 수가 다릅니다. 벡터 없는 콘텐츠는 추천에 나오지 않습니다. "
-                    + "매핑 테이블({})은 확인용으로 남겨둡니다. contentCount={}, points={}",
-                    ContentSeedKeyTable.TABLE, contentCount, points);
+                    + "contentCount={}, points={}", contentCount, points);
         }
         log.info("Qdrant content vector seed completed: contentCount={}, loaded={}, points={}, modelVersions={}",
                 contentCount, loaded, points, modelVersions);
-    }
-
-    private void dropSeedKeyTableIfExists() {
-        if (seedKeyTable.exists()) {
-            seedKeyTable.drop();
-            log.info("시딩 전용 매핑 테이블({})을 지웠습니다.", ContentSeedKeyTable.TABLE);
-        }
     }
 
     private boolean isAlreadyLoaded(long contentCount, Set<String> modelVersions) {
@@ -174,7 +150,9 @@ public class ContentVectorLoader implements ApplicationRunner {
         }
 
         List<String> sourceKeys = rows.stream().map(ContentVectorCsv.Row::sourceKey).toList();
-        Map<String, Long> contentIdBySourceKey = seedKeyTable.findContentIds(dtype, sourceKeys);
+        Map<String, Long> contentIdBySourceKey = contentRepository.findIdsBySourceKeys(dtype, sourceKeys)
+                .stream()
+                .collect(Collectors.toMap(ContentSourceKeyDto::sourceKey, ContentSourceKeyDto::id));
 
         List<ContentVectorRecord> records = new ArrayList<>(rows.size());
         for (ContentVectorCsv.Row row : rows) {
