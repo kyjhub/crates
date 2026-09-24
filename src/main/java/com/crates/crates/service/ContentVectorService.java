@@ -10,11 +10,19 @@ import org.springframework.stereotype.Service;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
 public class ContentVectorService {
+
+    /** point payload 키. point id와 같은 값이지만 payload 필터에 쓰려고 함께 싣는다. */
+    public static final String PAYLOAD_CONTENT_ID = "content_id";
+
+    /**
+     * 벡터를 만든 AI 모델 체크포인트. content 벡터와 검색어·취향 벡터가 같은 모델 공간에
+     * 있어야 Cosine 유사도가 의미를 갖는다. 모델을 바꿀 때 어느 point가 옛 모델인지 이 값으로 가른다.
+     */
+    public static final String PAYLOAD_MODEL_VERSION = "model_version";
 
     private final QdrantPointOperations pointOperations;
 
@@ -39,27 +47,40 @@ public class ContentVectorService {
         pointOperations.ensureCollection(collectionName, vectorDimension);
     }
 
-    // 이미 Qdrant에 저장된 content ID를 찾아 더미 벡터의 중복 저장을 방지한다.
-    public Set<Long> findExistingContentIds(List<Long> contentIds) {
-        return pointOperations.findExistingPointIds(collectionName, contentIds);
+    /** 컬렉션의 point 수. */
+    public long countPoints() {
+        return pointOperations.count(collectionName);
+    }
+
+    /** model_version이 주어진 값 중 하나인 point 수. */
+    public long countPointsWithModelVersion(Collection<String> modelVersions) {
+        return pointOperations.countMatching(collectionName, PAYLOAD_MODEL_VERSION, List.copyOf(modelVersions));
     }
 
     // Qdrant point ID와 payload의 content_id를 관계형 DB의 content ID로 통일해 저장한다.
-    public void upsert(Long contentId, float[] vector) {
-        pointOperations.upsertPoint(collectionName, contentId, vector, Map.of("content_id", contentId));
+    public void upsert(ContentVectorRecord record) {
+        upsertAll(List.of(record));
     }
 
     // 여러 콘텐츠 벡터를 Qdrant point로 변환해 배치 저장한다.
     public void upsertAll(List<ContentVectorRecord> records) {
         List<PointRecord> points = records.stream()
-                .map(record -> new PointRecord(
-                        record.contentId(),
-                        record.vector(),
-                        Map.of("content_id", record.contentId())
-                ))
+                .map(record -> new PointRecord(record.contentId(), record.vector(), payloadOf(record)))
                 .toList();
 
         pointOperations.upsertPoints(collectionName, points);
+    }
+
+    private Map<String, Object> payloadOf(ContentVectorRecord record) {
+        // Map.of는 null 값을 받지 않아 버전이 비면 여기서 NPE로 멈춘다. 이유가 드러나도록 먼저 검사한다.
+        if (record.modelVersion() == null || record.modelVersion().isBlank()) {
+            throw new IllegalArgumentException("model_version 없이 콘텐츠 벡터를 저장할 수 없습니다. contentId: "
+                    + record.contentId());
+        }
+        return Map.of(
+                PAYLOAD_CONTENT_ID, record.contentId(),
+                PAYLOAD_MODEL_VERSION, record.modelVersion()
+        );
     }
 
     /**

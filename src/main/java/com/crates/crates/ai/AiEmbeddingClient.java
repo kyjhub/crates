@@ -4,14 +4,11 @@ import com.crates.crates.Global.exception.AiServerException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
-// 스텁이 켜져 있으면 이 빈은 올라오지 않는다. 둘 다 등록되면 EmbeddingClient 주입이 모호해진다.
 @Component
-@ConditionalOnProperty(name = "ai.server.stub.enabled", havingValue = "false", matchIfMissing = true)
 @RequiredArgsConstructor
 public class AiEmbeddingClient implements EmbeddingClient {
 

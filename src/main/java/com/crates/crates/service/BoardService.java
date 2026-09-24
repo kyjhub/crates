@@ -24,6 +24,7 @@ import com.crates.crates.repository.ContentRepository;
 import com.crates.crates.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
+import com.crates.crates.Global.paging.OffsetLimit;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -243,7 +244,10 @@ public class BoardService {
     public PageResponse<BoardWithContentsDto> getMyBoards(MyBoardFilter filter, int page, int size, Long userId)
     {
         // 한 건 더 가져와 초과분이 있는지로 hasNext를 판정한다. count 쿼리가 아예 필요 없다.
-        List<Board> fetched = findMyBoardsBy(filter, userId, PageRequest.of(page, size + 1));
+        //
+        // PageRequest.of(page, size + 1)로 적으면 안 된다. 오프셋이 page * (size + 1)이 되어
+        // 2페이지부터 경계의 항목 하나가 건너뛰어진다. 가져오는 개수와 건너뛰는 개수는 다른 값이다.
+        List<Board> fetched = findMyBoardsBy(filter, userId, OffsetLimit.forPageWithLookahead(page, size));
 
         boolean hasNext = fetched.size() > size;
         // 자르고 나서 toResponses를 부른다. 순서를 바꾸면 응답에 나가지도 않을 보드의
@@ -264,7 +268,12 @@ public class BoardService {
     {
         return switch (filter)
         {
-            case ALL -> boardRepository.findMyBoards(userId, Rating.LIKE, pageable);
+            // 네이티브 UNION ALL이라 Pageable을 넘기지 못한다. 각 갈래가 offset + size 만큼
+            // 가져와야 합쳐서 잘랐을 때 맞으므로 cap을 따로 계산해 넘긴다.
+            case ALL -> boardRepository.findMyBoards(
+                    userId, Rating.LIKE.name(),
+                    pageable.getPageSize(), pageable.getOffset(),
+                    pageable.getOffset() + pageable.getPageSize());
             case LIKED -> boardFeedbackRepository.findLikedBoards(userId, Rating.LIKE, pageable);
             case CREATED -> boardRepository.findCreatedByMe(userId, pageable);
         };

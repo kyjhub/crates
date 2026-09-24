@@ -1,0 +1,41 @@
+# 벤치마크 전용 프로필.
+#
+# 이 파일의 존재 이유는 딱 하나다 — application.yaml의 기본 프로필이 ddl-auto: create 이고,
+# 벤치마크는 @AutoConfigureTestDatabase(replace = NONE)으로 **진짜 개발 DB**에 붙는다.
+# 그 둘이 만나면 컨텍스트가 뜨는 순간 전체 테이블이 drop/create 되고 import.sql이
+# flyway_schema_history까지 지운다. seed.sh로 쌓아둔 데이터가 통째로 날아간다.
+#
+# 방어선을 테스트 클래스의 애노테이션 한 줄에 두면 안 된다. 그 줄이 빠지거나 같은 패키지에
+# 그 줄 없는 테스트가 하나 추가되면 그대로 터진다. 그래서 프로필 파일로 못 박는다.
+#
+# 자격증명은 여기 적지 않는다. crates_server.env(gitignore 대상)를 build.gradle의 test 태스크가
+# 읽어 환경변수로 넘긴다. datasource 설정은 application.yaml의 것을 그대로 상속한다.
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: none      # ← 이 줄이 개발 DB를 지킨다. 절대 바꾸지 말 것.
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        # SQL 앞에 JPQL 주석을 붙인다. pg_stat_statements에 남는 쿼리 텍스트를 보고
+        # 어느 리포지토리 메서드에서 나온 것인지 되짚을 수 있다.
+        use_sql_comments: true
+  flyway:
+    enabled: false        # 측정 대상 DB의 스키마를 건드리지 않는다
+
+# SQL 로깅은 반드시 꺼야 한다. @DataJpaTest가 기본으로 켜는데, 측정 구간 안에서 호출마다
+# 쿼리 한 줄을 포매팅해 표준출력에 쓰면 그 비용이 Java wall-clock에 그대로 섞인다.
+# (실측: 로그를 켠 채로 findPopularBoards의 Java p50이 0.412㎳, 끄면 그 대부분이 사라진다.)
+logging:
+  level:
+    org.hibernate.SQL: 'OFF'
+    org.hibernate.orm.jdbc.bind: 'OFF'
+
+# 측정 대상 DB를 그대로 쓰므로 Qdrant도 건드리지 않는다. 켜두면 content 수와 point 수가
+# 어긋날 때 컬렉션을 지우고 다시 적재해 측정 중인 상태를 바꾼다.
+ai:
+  vectorstore:
+    qdrant:
+      load:
+        enabled: false

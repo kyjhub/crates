@@ -18,8 +18,10 @@ COPY src src
 # 실행에 필요한 bootJar만 만든다. 테스트는 별도 검증 단계에서 실행한다.
 RUN ./gradlew --no-daemon bootJar
 
-# 실행 스테이지 — JDK가 아니라 JRE. 이미지가 절반 이하로 줄어든다.
-FROM eclipse-temurin:21-jre
+# 실행 스테이지 — JRE가 아니라 JDK. JRE가 이미지는 절반 이하지만 jcmd가 없어서
+# load-test/README.md의 JFR 프로파일링(docker exec backend_server jcmd 1 JFR.start)을 못 한다.
+# 성능을 재는 단계라 진단 도구를 남긴다. 운영 이미지로 쓸 때는 JRE로 돌려도 된다.
+FROM eclipse-temurin:21-jdk
 WORKDIR /app
 COPY --from=builder /app/build/libs/*.jar app.jar
 

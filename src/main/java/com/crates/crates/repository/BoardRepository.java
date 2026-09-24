@@ -74,15 +74,80 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
      * 좋아요 조건을 만족해도 통째로 빠질 수 있다. 에러가 아니라 "일부가 안 보이는" 증상으로만
      * 드러나므로 애매하게 두지 않는다.</p>
      */
-    @Query("SELECT b FROM Board b " +
-           "LEFT JOIN b.user owner " +
-           "LEFT JOIN BoardFeedback f ON f.board = b AND f.user.id = :userId AND f.rating = :rating " +
-           "WHERE b.deletedAt IS NULL " +
-           "  AND (owner.id = :userId OR f.id IS NOT NULL) " +
-           "ORDER BY COALESCE(f.createdAt, b.createdAt) DESC, b.id DESC")
+    /**
+     * "내 보드"(보관함 전체 탭) — 내가 만든 보드와 내가 좋아요한 보드를 합쳐 최근에 담은 순으로.
+     *
+     * <p>원래는 LEFT JOIN 하나에 COALESCE 정렬로 적혀 있었다. 결과는 같고 비용의 차수가 다르다.
+     *
+     * <p><b>왜 바꿨나.</b> 위 JPQL은 20행을 돌려주려고 보드 전부와 내 좋아요 전부를 메모리에
+     * 올린 뒤 정렬했다. 계정당 좋아요 1만 건 · 보드 2만 개에서 호출마다 10,841블록이었다.
+     * 원인은 둘 다 "정렬을 인덱스로 대신할 수 없다"로 모인다.</p>
+     *
+     * <ul>
+     *   <li>{@code ORDER BY COALESCE(f.createdAt, b.createdAt)} — LEFT JOIN 결과에 대한
+     *       계산식이라 어떤 인덱스도 이 순서를 미리 갖고 있지 않다.</li>
+     *   <li>{@code (owner.id = :userId OR f.id IS NOT NULL)} — 두 테이블에 걸친 OR라
+     *       인덱스로 후보를 좁히지 못한다. 한 사람 것을 확인하려고 users를 통째로 훑었다.</li>
+     * </ul>
+     *
+     * <p><b>COALESCE가 사실은 분기다.</b> 좋아요 행이 있으면 누른 시각, 없으면 만든 시각을 쓴다.
+     * 그러면 "좋아요한 보드"와 "내가 만들었고 좋아요하지 않은 보드" 두 집합으로 나뉘고,
+     * 각 집합은 단일 테이블 기준으로 정렬되므로 인덱스가 순서를 그대로 제공한다.
+     * 두 갈래가 이미 정렬돼 있으니 DB는 Merge Append로 앞에서부터 필요한 만큼만 합친다.</p>
+     *
+     * <p><b>겹치는 보드는 좋아요 갈래가 갖는다.</b> 내가 만들고 내가 좋아요도 한 보드는 두 번
+     * 나오면 안 된다. 만든 것 갈래에 {@code NOT EXISTS}를 걸어 배제한다 — COALESCE가 좋아요
+     * 시각을 우선하던 것과 정확히 같은 규칙이다.</p>
+     *
+     * <p><b>각 갈래가 {@code cap}(= offset + size)만큼 가져와야 한다.</b> size만 가져오면
+     * 2페이지부터 틀어진다. 한 갈래가 앞쪽을 독차지한 경우 뒤 페이지에 나올 행이 그 갈래의
+     * 상위 size 안에 없을 수 있기 때문이다. 합친 뒤 바깥에서 다시 자른다.</p>
+     *
+     * <p>삭제된 보드는 조인이 아니라 {@code NOT EXISTS}로 배제한다. 살아있는 보드가 사실상
+     * 전부라 조인하면 비용이 O(전체 보드)가 되지만, 삭제된 보드는 극소수라 배제하면
+     * O(삭제된 보드)가 된다. idx_board_deleted(V8)가 받친다 — findLikedBoardsWithTime과 같은 이유다.</p>
+     *
+     * <p>동률 기준은 {@code b.id DESC}로 원본을 그대로 둔다. 좋아요 갈래의 인덱스 순서는
+     * (created_at DESC, f.id DESC)라 b.id와 어긋나지만, PostgreSQL의 Incremental Sort가
+     * created_at까지는 인덱스 순서를 믿고 같은 시각끼리만 다시 정렬한다. 덕분에 정확한 순서를
+     * 지키면서도 앞에서 몇 건만 읽고 멈출 수 있다.</p>
+     *
+     * <p>네이티브인 이유는 JPQL에 집합 연산(UNION ALL)이 없어서다.</p>
+     *
+     * <p>실측(계정 1,001 / 보드 20,010 / 좋아요 1,000만 / 내가 만든 보드 2,000):</p>
+     * <pre>
+     *   기존   Hash Left Join → 3만 행을 만들어 1만 행 버림 → top-N 정렬   10,841블록
+     *   이 쿼리 Merge Append → 좋아요 갈래는 21행만 읽고 멈춤                 187블록
+     * </pre>
+     */
+    @Query(value = """
+            SELECT b.*
+              FROM board b
+              JOIN ( (SELECT f.board_id AS bid, f.created_at AS sort_at
+                        FROM board_feedback f
+                       WHERE f.user_id = :userId AND f.rating = :rating
+                         AND NOT EXISTS (SELECT 1 FROM board d
+                                          WHERE d.id = f.board_id AND d.deleted_at IS NOT NULL)
+                       ORDER BY f.created_at DESC, f.board_id DESC
+                       LIMIT :cap)
+                     UNION ALL
+                     (SELECT o.id AS bid, o.created_at AS sort_at
+                        FROM board o
+                       WHERE o.user_id = :userId AND o.deleted_at IS NULL
+                         AND NOT EXISTS (SELECT 1 FROM board_feedback f2
+                                          WHERE f2.board_id = o.id
+                                            AND f2.user_id = :userId AND f2.rating = :rating)
+                       ORDER BY o.created_at DESC, o.id DESC
+                       LIMIT :cap)
+                   ) picked ON picked.bid = b.id
+             ORDER BY picked.sort_at DESC, picked.bid DESC
+             LIMIT :size OFFSET :offset
+            """, nativeQuery = true)
     List<Board> findMyBoards(@Param("userId") Long userId,
-                             @Param("rating") Rating rating,
-                             Pageable pageable);
+                             @Param("rating") String rating,
+                             @Param("size") int size,
+                             @Param("offset") long offset,
+                             @Param("cap") long cap);
 
     /**
      * 보관함 "만든 것" 탭 — 내가 만든 보드만.

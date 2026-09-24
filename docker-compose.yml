@@ -99,8 +99,28 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
-#    volumes:
-#      - ./postgres_data:/var/lib/postgresql/data # 데이터 영구 보존을 위한 바인드 마운트
+    # /dev/shm 크기. 도커 기본값이 64MB인데 PostgreSQL은 병렬 워커끼리 데이터를 주고받는
+    # 동적 공유 메모리(dynamic_shared_memory_type=posix)를 여기에 잡는다. 기본 공유 버퍼
+    # (shared_buffers)와는 별개라, 평소에는 멀쩡하다가 병렬 작업에서만 터진다.
+    #
+    #   ERROR: could not resize shared memory segment "/PostgreSQL.1945457568"
+    #          to 67145280 bytes: No space left on device        <- 67,145,280 ≈ 64MB
+    #
+    # 실제로 board_feedback 1,000만 행에 VACUUM을 돌리다 이 에러를 만났다. 메시지가 디스크를
+    # 가리켜서 원인을 찾기 어렵다 — 디스크는 797GB 남아 있었다.
+    #
+    # VACUUM만의 문제가 아니다. 병렬 쿼리가 켜져 있고(max_parallel_workers_per_gather=2,
+    # min_parallel_table_scan_size=8MB) 실제로 Parallel Seq Scan이 도는 것을 측정 중에 확인했다.
+    # 해시 조인의 공유 해시 테이블도 여기 들어가므로, 조인 입력이 커지면 어제까지 돌던 쿼리가
+    # 갑자기 죽는다.
+    #
+    # 상한일 뿐이라 실제로 쓰는 만큼만 점유한다(평소 1.1MB 수준).
+    shm_size: 1gb
+    volumes:
+      # 이름 있는 볼륨을 명시한다. 없으면 postgres 이미지의 VOLUME 선언 때문에 익명 볼륨이
+      # 붙는데, 그건 이름이 해시라 어느 컨테이너 것인지 알기 어렵고 컨테이너를 갈아끼울 때
+      # 딸려 오는지가 보장되지 않는다. 데이터가 걸린 마운트를 운에 맡기지 않는다.
+      - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
   # Elasticsearch: 전문 텍스트 검색 (Nori 분석기 포함)
@@ -150,6 +170,10 @@ services:
   #
   # 다만 상한을 걸어도 "운영에서 기대할 수치"가 되지는 않는다. 부하 생성기가 여전히 같은
   # 기계에 있어서다. 자세한 것은 docs/load-test-and-metrics.md 2장.
+  #
+  # 코드를 바꾼 뒤에는: docker compose --env-file crates_server.env up -d --build backend
+  # (start/restart만 하면 옛 이미지로 뜬다)
+  # IntelliJ에서 앱을 띄울 때는 이 컨테이너를 먼저 멈출 것 — 둘 다 8080을 쓴다.
   backend:
     build: .
     container_name: backend_server
@@ -168,8 +192,10 @@ services:
       # STORAGE_BUCKET_URL은 덮지 않는다. 이건 서버가 접속하는 주소가 아니라
       # 브라우저에게 내려주는 이미지 URL이라, minio:9000으로 바꾸면 프론트에서 전부 깨진다.
       #
-      # AI_SERVER_BASE_URL도 그대로 둔다. Tailscale IP라 컨테이너에서 닿지 않을 수 있는데,
-      # 지금은 ai.server.stub.enabled=true라 호출 자체가 없다. 스텁을 끄면 그때 확인할 것.
+      # AI_SERVER_BASE_URL도 그대로 둔다(Tailscale IP). 검색어 임베딩은 스텁 없이 실제로 호출하므로
+      # 컨테이너에서 닿아야 한다. Docker Desktop은 호스트 경유로 나가서 닿는다(2026-09-24 ping 200).
+      # 안 닿으면 검색이 AiServerException으로 실패한다. 확인:
+      #   docker run --rm --network crates_default curlimages/curl -s http://<AI 서버>:8000/api/v1/ping
     depends_on:
       # 준비 완료까지 기다린다. 단순 depends_on은 컨테이너 시작만 보장해서,
       # Flyway가 첫 쿼리를 던질 때 DB가 아직 안 떠 있으면 앱이 그대로 죽는다.
