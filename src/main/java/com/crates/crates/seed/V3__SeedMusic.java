@@ -17,7 +17,7 @@ import java.sql.Statement;
  * year에서는 연도만 추출하고, artists의 JSON 배열 문자열은
  * PostgreSQL varchar 배열로 변환한다.
  * 원본에 모든 필드가 같은 중복 행(id 기준 354행)이 있어 하나만 남기고, 벡터 CSV에 없는 곡은 넣지 않는다.
- * music_id → content.id 짝을 시딩 전용 매핑 테이블(content_seed_key)에 남긴다.
+ * music_id를 content.source_key로 남긴다. ContentVectorLoader가 이 값으로 벡터를 content.id에 짝짓는다.
  * s3ObjectKey/imageExtension은 임시 테이블이 살아있는 동안 ContentImageUploader가 채운다.
  */
 @Component
@@ -26,12 +26,12 @@ public class V3__SeedMusic extends BaseJavaMigration {
 
     private static final String CSV_RESOURCE = "/data/music.csv";
 
-    /** 아직 staging_music_row_id가 살아있는 시점에만 img URL을 content.id와 짝지을 수 있다. */
+    /** music_raw가 살아있는 이 트랜잭션 안에서만 img URL을 content.id와 짝지을 수 있다. */
     private static final String IMAGE_TARGET_SQL = """
             SELECT c.id, r.img
             FROM content c
-            JOIN music_raw r ON r.staging_row_id = c.staging_music_row_id
-            WHERE c.staging_music_row_id IS NOT NULL
+            JOIN music_raw r ON r.music_id = c.source_key
+            WHERE c.dtype = 'MUSIC'
               AND NULLIF(btrim(r.img), '') IS NOT NULL
             ORDER BY c.id
             LIMIT ?
@@ -108,11 +108,9 @@ public class V3__SeedMusic extends BaseJavaMigration {
 
             // content <-> music 두 테이블에 나눠 넣어야 해서(JOINED 상속), 방금 생성된
             // content.id를 music_raw 행과 다시 짝지을 상관관계 키가 필요함.
-            // 위에서 중복을 걸렀지만 짝짓기는 원래대로 임시 테이블의 행 ID로 한다.
-            stmt.execute("ALTER TABLE content ADD COLUMN staging_music_row_id BIGINT");
-
+            // 위에서 중복을 걸러냈으므로 music_id가 곧 유일한 source_key다.
             stmt.execute("""
-                    INSERT INTO content (dtype, title, release_year, staging_music_row_id)
+                    INSERT INTO content (dtype, title, release_year, source_key)
                     SELECT
                         'MUSIC',
                         NULLIF(btrim(track_name), ''),
@@ -121,7 +119,7 @@ public class V3__SeedMusic extends BaseJavaMigration {
                                 THEN substring(btrim(release_year_text) from 1 for 4)::int
                             ELSE NULL
                         END,
-                        staging_row_id
+                        music_id
                     FROM music_raw
                     """);
 
@@ -137,22 +135,12 @@ public class V3__SeedMusic extends BaseJavaMigration {
                         END,
                         NULLIF(btrim(r.lyrics), '')
                     FROM content c
-                    JOIN music_raw r ON r.staging_row_id = c.staging_music_row_id
-                    WHERE c.staging_music_row_id IS NOT NULL
+                    JOIN music_raw r ON r.music_id = c.source_key
+                    WHERE c.dtype = 'MUSIC'
                     """);
 
             imageUploader.seedImages(connection, IMAGE_TARGET_SQL, "music");
 
-            // staging_music_row_id가 사라지기 전에 벡터 적재용 짝을 남긴다. 위에서 중복을 걸러내 music_id가 유일하다.
-            stmt.execute("""
-                    INSERT INTO content_seed_key (content_id, dtype, source_key)
-                    SELECT c.id, 'MUSIC', r.music_id
-                    FROM content c
-                    JOIN music_raw r ON r.staging_row_id = c.staging_music_row_id
-                    WHERE c.staging_music_row_id IS NOT NULL
-                    """);
-
-            stmt.execute("ALTER TABLE content DROP COLUMN staging_music_row_id");
         }
     }
 
