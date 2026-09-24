@@ -122,32 +122,26 @@ ai:
       api-key: "" # 로컬 도커는 인증이 없으므로 빈 문자열
       content-collection-name: content_vector
       query-collection-name: query_vector
-      # 애플리케이션 시작 시 RDB의 content.id에 대응하는 로컬 테스트용 더미 벡터를 생성한다.
-      seed:
+      # AI 서버가 만든 콘텐츠 벡터 CSV를 기동 시 content_vector에 적재한다(ContentVectorLoader).
+      # 이미 같은 수·같은 model_version으로 적재돼 있으면 건너뛰므로 매 기동마다 다시 넣지 않는다.
+      load:
         enabled: true
-        dimension: 768
         batch-size: 256
-        # 관계형 DB를 초기화하면 content.id가 1부터 다시 부여되는데 Qdrant는 그 사실을 모른다.
-        # 이전 실행의 point가 남아 있으면 시더가 전부 "이미 있음"으로 건너뛰어, 새 콘텐츠에
-        # 옛 벡터가 매달린 채 조용히 잘못된 추천이 나간다. 그래서 시딩 전에 컬렉션을 갈아엎는다.
-        # 실제 임베딩을 적재하기 시작하면 반드시 false로 되돌릴 것.
-        recreate: true
-        # 같은 content_id에는 재실행해도 동일한 float32 벡터가 생성된다.
-        random-seed: 20260830
+        # true면 이미 적재돼 있어도 지우고 다시 넣는다. content 수는 같은데 id 순서가 바뀌는
+        # 재시딩(시딩 SQL 수정 등)은 자동 판단으로 잡히지 않으므로 그때 한 번 켠다.
+        recreate: false
+        # V1~V3 시딩도 이 파일의 id로 "벡터 있는 콘텐츠만" 넣는다. 둘이 같은 파일을 봐야 한다.
+        # classpath: 또는 file: 형식. 운영에서는 jar에 싣지 않고 file:로 외부 경로를 넘긴다.
+        files:
+          book: classpath:data/book_vectors.csv
+          movie: classpath:data/movie_vectors.csv
+          music: classpath:data/music_vectors.csv
   server:
     base-url: http://100.77.133.40:8000  # AI 서버(Tailscale IP). 로컬 단독 테스트 시 http://localhost:8000
     embedding-path: /api/v1/search/vector  # AI 서버가 백엔드용으로 만든 계약: {"text": "..."} -> {"vector": [...]}
     connect-timeout: 2000
     read-timeout: 3000
-    embedding-dimension: 768   # AI 서버가 반환하는 벡터 차원 (float32 x 768)
-    # AI 서버와 아직 통신할 수 없어서, 검색어 임베딩을 로컬에서 대신 만든다.
-    # true면 StubEmbeddingClient가, false면 실제 호출용 AiEmbeddingClient가 빈으로 등록된다.
-    # 통신이 열리면 enabled만 false로 되돌리면 되고 나머지 코드는 그대로다.
-    stub:
-      enabled: true
-      # 같은 검색어에는 재실행해도 항상 같은 벡터가 나온다.
-      # 콘텐츠 시딩 seed와는 별개 값이라 두 벡터 공간이 서로 얽히지 않는다.
-      random-seed: 20260902
+    embedding-dimension: 768   # AI 서버가 반환하는 벡터 차원 (float32 x 768). 콘텐츠 벡터 적재도 이 값으로 검증한다
 
   # 사용자 취향 벡터. 좋아요한 보드들의 콘텐츠 벡터에서 매번 다시 계산한다.
   user-vector:

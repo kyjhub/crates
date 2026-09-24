@@ -16,6 +16,8 @@ import java.sql.Statement;
  * content/music 테이블에 적재한다.
  * year에서는 연도만 추출하고, artists의 JSON 배열 문자열은
  * PostgreSQL varchar 배열로 변환한다.
+ * 원본에 모든 필드가 같은 중복 행(id 기준 354행)이 있어 하나만 남기고, 벡터 CSV에 없는 곡은 넣지 않는다.
+ * music_id → content.id 짝을 시딩 전용 매핑 테이블(content_seed_key)에 남긴다.
  * s3ObjectKey/imageExtension은 임시 테이블이 살아있는 동안 ContentImageUploader가 채운다.
  */
 @Component
@@ -36,6 +38,7 @@ public class V3__SeedMusic extends BaseJavaMigration {
             """;
 
     private final ContentImageUploader imageUploader;
+    private final ContentVectorFiles vectorFiles;
 
     @Override
     public void migrate(Context context) throws Exception {
@@ -85,11 +88,27 @@ public class V3__SeedMusic extends BaseJavaMigration {
         }
 
         copyCsvIntoStaging(connection);
+        vectorFiles.stageKeys(connection, "MUSIC", "music_vector_key");
 
         try (Statement stmt = connection.createStatement()) {
+            // 중복 제거. 같은 music_id의 행은 모든 필드가 같으므로 먼저 들어온 행만 남긴다.
+            // 남겨두면 같은 벡터가 point 두 개에 붙어 유사 콘텐츠 검색에 같은 작품이 연달아 나온다.
+            stmt.execute("""
+                    DELETE FROM music_raw a
+                    USING music_raw b
+                    WHERE a.music_id = b.music_id
+                      AND a.staging_row_id > b.staging_row_id
+                    """);
+
+            // 벡터가 없는 곡은 넣지 않는다.
+            stmt.execute("""
+                    DELETE FROM music_raw r
+                    WHERE NOT EXISTS (SELECT 1 FROM music_vector_key v WHERE v.id = r.music_id)
+                    """);
+
             // content <-> music 두 테이블에 나눠 넣어야 해서(JOINED 상속), 방금 생성된
             // content.id를 music_raw 행과 다시 짝지을 상관관계 키가 필요함.
-            // music_id는 CSV에서 중복될 수 있으므로 임시 테이블의 행 ID를 사용한다.
+            // 위에서 중복을 걸렀지만 짝짓기는 원래대로 임시 테이블의 행 ID로 한다.
             stmt.execute("ALTER TABLE content ADD COLUMN staging_music_row_id BIGINT");
 
             stmt.execute("""
@@ -123,6 +142,15 @@ public class V3__SeedMusic extends BaseJavaMigration {
                     """);
 
             imageUploader.seedImages(connection, IMAGE_TARGET_SQL, "music");
+
+            // staging_music_row_id가 사라지기 전에 벡터 적재용 짝을 남긴다. 위에서 중복을 걸러내 music_id가 유일하다.
+            stmt.execute("""
+                    INSERT INTO content_seed_key (content_id, dtype, source_key)
+                    SELECT c.id, 'MUSIC', r.music_id
+                    FROM content c
+                    JOIN music_raw r ON r.staging_row_id = c.staging_music_row_id
+                    WHERE c.staging_music_row_id IS NOT NULL
+                    """);
 
             stmt.execute("ALTER TABLE content DROP COLUMN staging_music_row_id");
         }

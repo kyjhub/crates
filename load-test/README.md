@@ -121,7 +121,7 @@ SEED="10 600 150" ./load-test/run-measure.sh like-history 3
 ```
 
 환경변수: `USERS`, `ITERATIONS`, `POOL`(like-history), `SEED`("계정수 보드수 계정당좋아요"),
-`BASE_URL`, `MAX_CONTENT_ID`(기본 191239).
+`BASE_URL`, `MAX_CONTENT_ID`(기본 183136).
 
 ### 왜 이런 모양인가
 

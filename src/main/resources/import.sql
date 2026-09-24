@@ -9,3 +9,8 @@
 -- hbm2ddl.import_files_sql_extractor 설정이 필요하다. 기본 파서는 한 줄을 한 문장으로 보고,
 -- 실패해도 로그만 남기고 앱이 그대로 뜬다(halt_on_error 기본 false).
 DROP TABLE IF EXISTS flyway_schema_history;
+--
+-- content_seed_key는 V1이 만들고 ContentVectorLoader가 적재를 마치면 지우는 시딩 전용 테이블이다.
+-- 적재가 실패하거나 중간에 멈추면 남는데, 엔티티가 아니라 ddl-auto: create가 지우지 않는다.
+-- 남아 있으면 다음 V1의 CREATE TABLE이 실패하므로 초기화 시점에 함께 지운다.
+DROP TABLE IF EXISTS content_seed_key;

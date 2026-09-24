@@ -1,5 +1,6 @@
 package com.crates.crates.qdrant;
 
+import io.qdrant.client.ConditionFactory;
 import io.qdrant.client.PointIdFactory;
 import io.qdrant.client.QdrantClient;
 import io.qdrant.client.ValueFactory;
@@ -13,10 +14,8 @@ import org.springframework.stereotype.Component;
 
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ExecutionException;
 
 @Component
@@ -88,31 +87,22 @@ public class QdrantPointOperations {
         }
     }
 
+    /** 컬렉션의 정확한 point 수. */
+    public long count(String collectionName) {
+        return await(qdrantClient.countAsync(collectionName, null, true));
+    }
+
     /**
-     * 전달받은 관계형 content ID 중 Qdrant에 이미 저장된 point ID만 반환한다.
-     * 기존의 실제 임베딩을 더미 벡터로 덮어쓰지 않기 위한 사전 조회에 사용한다.
+     * payload의 keyword 필드가 values 중 하나인 point 수.
+     *
+     * <p>payload 인덱스가 없으면 전체를 훑는다. 기동 시 한 번 부르는 용도라 괜찮지만,
+     * 요청 경로에서 부르게 되면 그 필드에 keyword 인덱스를 먼저 만들 것.</p>
      */
-    public Set<Long> findExistingPointIds(String collectionName, List<Long> ids) {
-        if (ids.isEmpty()) {
-            return Set.of();
-        }
-
-        List<Points.PointId> pointIds = ids.stream()
-                .map(PointIdFactory::id)
-                .toList();
-        List<Points.RetrievedPoint> points = await(
-                qdrantClient.retrieveAsync(collectionName, pointIds, false, false, null)
-        );
-
-        Set<Long> existingIds = new HashSet<>(points.size());
-        for (Points.RetrievedPoint point : points) {
-            Points.PointId pointId = point.getId();
-            if (pointId.getPointIdOptionsCase() != Points.PointId.PointIdOptionsCase.NUM) {
-                throw new IllegalStateException("Qdrant point id is not numeric.");
-            }
-            existingIds.add(pointId.getNum());
-        }
-        return existingIds;
+    public long countMatching(String collectionName, String key, List<String> values) {
+        Points.Filter filter = Points.Filter.newBuilder()
+                .addMust(ConditionFactory.matchKeywords(key, values))
+                .build();
+        return await(qdrantClient.countAsync(collectionName, filter, true));
     }
 
     /**

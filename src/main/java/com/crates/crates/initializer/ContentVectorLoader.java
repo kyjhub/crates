@@ -1,0 +1,204 @@
+package com.crates.crates.initializer;
+
+import com.crates.crates.repository.ContentRepository;
+import com.crates.crates.seed.ContentSeedKeyTable;
+import com.crates.crates.seed.ContentVectorCsv;
+import com.crates.crates.seed.ContentVectorFiles;
+import com.crates.crates.service.ContentVectorRecord;
+import com.crates.crates.service.ContentVectorService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * AI 서버가 만든 콘텐츠 벡터 CSV를 Qdrant content_vector 컬렉션에 적재한다.
+ *
+ * <p>CSV의 id는 원본 데이터셋의 id라서, V1~V3가 남긴 시딩 전용 매핑 테이블({@link ContentSeedKeyTable})로
+ * content.id를 찾아 point id로 쓴다. 적재를 마치고 point 수가 content 수와 맞으면 그 테이블을 지운다.
+ * 맞지 않으면 원인을 볼 수 있게 남겨둔다.</p>
+ *
+ * <p><b>언제 적재하는가</b> — 매 기동마다 18만 건을 다시 넣지 않도록, 아래가 모두 맞으면 건너뛴다.</p>
+ * <ul>
+ *   <li>point 수 == content 수 — RDB를 다시 시딩하면 id가 바뀔 수 있는데, 행 수가 어긋나면 이를 잡는다</li>
+ *   <li>그 point가 전부 CSV의 model_version을 달고 있다 — 새 모델의 CSV로 바꾸면 다시 적재된다</li>
+ * </ul>
+ * <p>다시 적재할 때는 컬렉션을 지우고 만든다. point id가 content.id라서, 남겨두면 RDB 재시딩 전의
+ * point가 엉뚱한 콘텐츠에 매달린 채 남는다. 같은 행 수로 순서만 바뀐 재시딩은 위 조건으로 잡히지
+ * 않으므로 그때는 {@code ai.vectorstore.qdrant.load.recreate=true}로 강제한다.</p>
+ *
+ * <p>매핑 테이블을 지운 뒤에는 벡터만 다시 적재할 수 없다. 새 모델의 CSV로 바꿨다면 RDB부터
+ * 다시 시딩해야 한다(init → flyway-test). 그 상태에서 다시 적재가 필요하다고 판단되면
+ * 기존 컬렉션을 건드리지 않고 오류 로그만 남긴다 — 지우고 나면 채울 방법이 없기 때문이다.</p>
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+@ConditionalOnProperty(name = "ai.vectorstore.qdrant.load.enabled", havingValue = "true")
+public class ContentVectorLoader implements ApplicationRunner {
+
+    private final ContentRepository contentRepository;
+    private final ContentVectorService contentVectorService;
+    private final ContentVectorFiles vectorFiles;
+    private final ContentSeedKeyTable seedKeyTable;
+
+    @Value("${ai.server.embedding-dimension}")
+    private int vectorDimension;
+
+    @Value("${ai.vectorstore.qdrant.load.batch-size:256}")
+    private int batchSize;
+
+    /** true면 이미 적재돼 있어도 컬렉션을 지우고 다시 넣는다. */
+    @Value("${ai.vectorstore.qdrant.load.recreate:false}")
+    private boolean forceRecreate;
+
+    @Override
+    public void run(ApplicationArguments args) throws IOException {
+        if (batchSize <= 0) {
+            throw new IllegalStateException("ai.vectorstore.qdrant.load.batch-size는 1 이상이어야 합니다: " + batchSize);
+        }
+
+        // Flyway 시딩이 끝난 뒤의 실제 content 수를 기준으로 판단한다.
+        long contentCount = contentRepository.count();
+        if (contentCount == 0) {
+            log.warn("content 테이블이 비어 있어 Qdrant 콘텐츠 벡터 적재를 건너뜁니다.");
+            return;
+        }
+
+        contentVectorService.ensureCollection(vectorDimension);
+        Set<String> modelVersions = modelVersionsInFiles();
+
+        if (!forceRecreate && isAlreadyLoaded(contentCount, modelVersions)) {
+            // 이미 적재된 상태에서 매핑 테이블이 남아 있으면(같은 데이터로 RDB만 다시 시딩한 경우) 지금 지운다.
+            dropSeedKeyTableIfExists();
+            // run-measure.sh가 "seed completed"로 적재 완료를 판단한다. 건너뛸 때도 같은 문구를 남긴다.
+            log.info("Qdrant content vector seed completed (이미 적재됨): contentCount={}, modelVersions={}",
+                    contentCount, modelVersions);
+            return;
+        }
+
+        if (!seedKeyTable.exists()) {
+            log.error("콘텐츠 벡터를 다시 적재해야 하지만 시딩 전용 매핑 테이블({})이 이미 지워졌습니다. "
+                    + "기존 컬렉션은 그대로 둡니다. init → flyway-test 프로필로 RDB부터 다시 시딩하세요.",
+                    ContentSeedKeyTable.TABLE);
+            return;
+        }
+
+        contentVectorService.recreateCollection(vectorDimension);
+
+        long loaded = 0;
+        for (String dtype : ContentVectorFiles.DTYPES) {
+            loaded += load(dtype);
+        }
+
+        long points = contentVectorService.countPoints();
+        if (points == contentCount) {
+            dropSeedKeyTableIfExists();
+        } else {
+            // V1~V3가 벡터 있는 콘텐츠만 넣으므로 둘은 같아야 한다. 다르면 시딩과 적재가 다른 파일을 본 것이다.
+            // 원인을 추적할 수 있게 매핑 테이블은 남겨둔다.
+            log.warn("content 수와 point 수가 다릅니다. 벡터 없는 콘텐츠는 추천에 나오지 않습니다. "
+                    + "매핑 테이블({})은 확인용으로 남겨둡니다. contentCount={}, points={}",
+                    ContentSeedKeyTable.TABLE, contentCount, points);
+        }
+        log.info("Qdrant content vector seed completed: contentCount={}, loaded={}, points={}, modelVersions={}",
+                contentCount, loaded, points, modelVersions);
+    }
+
+    private void dropSeedKeyTableIfExists() {
+        if (seedKeyTable.exists()) {
+            seedKeyTable.drop();
+            log.info("시딩 전용 매핑 테이블({})을 지웠습니다.", ContentSeedKeyTable.TABLE);
+        }
+    }
+
+    private boolean isAlreadyLoaded(long contentCount, Set<String> modelVersions) {
+        long points = contentVectorService.countPoints();
+        if (points != contentCount) {
+            log.info("Qdrant point 수({})가 content 수({})와 달라 콘텐츠 벡터를 다시 적재합니다.", points, contentCount);
+            return false;
+        }
+        long current = contentVectorService.countPointsWithModelVersion(modelVersions);
+        if (current != points) {
+            log.info("model_version이 {}가 아닌 point가 {}건 있어 콘텐츠 벡터를 다시 적재합니다.",
+                    modelVersions, points - current);
+            return false;
+        }
+        return true;
+    }
+
+    /** 각 파일 첫 행의 model_version. 파일 전체를 읽지 않고 적재 여부를 판단하기 위해서다. */
+    private Set<String> modelVersionsInFiles() throws IOException {
+        Set<String> versions = new LinkedHashSet<>();
+        for (String dtype : ContentVectorFiles.DTYPES) {
+            ContentVectorCsv.firstRow(vectorFiles.resourceFor(dtype))
+                    .map(ContentVectorCsv.Row::modelVersion)
+                    .ifPresent(versions::add);
+        }
+        return versions;
+    }
+
+    /** 한 도메인의 CSV를 batchSize 줄씩 읽어 적재하고 적재 건수를 돌려준다. */
+    private long load(String dtype) throws IOException {
+        LoadProgress progress = new LoadProgress();
+        List<ContentVectorCsv.Row> batch = new ArrayList<>(batchSize);
+
+        ContentVectorCsv.forEachRow(vectorFiles.resourceFor(dtype), row -> {
+            batch.add(row);
+            if (batch.size() == batchSize) {
+                flush(dtype, batch, progress);
+                batch.clear();
+            }
+        });
+        flush(dtype, batch, progress);
+
+        // book은 원본 CSV에 없는 벡터 id가 29건 있어 unmatched가 0이 아니어도 정상이다.
+        log.info("[{}] 콘텐츠 벡터 적재: rows={}, loaded={}, unmatched={}",
+                dtype, progress.rows, progress.loaded, progress.unmatched);
+        return progress.loaded;
+    }
+
+    private void flush(String dtype, List<ContentVectorCsv.Row> rows, LoadProgress progress) {
+        if (rows.isEmpty()) {
+            return;
+        }
+
+        List<String> sourceKeys = rows.stream().map(ContentVectorCsv.Row::sourceKey).toList();
+        Map<String, Long> contentIdBySourceKey = seedKeyTable.findContentIds(dtype, sourceKeys);
+
+        List<ContentVectorRecord> records = new ArrayList<>(rows.size());
+        for (ContentVectorCsv.Row row : rows) {
+            Long contentId = contentIdBySourceKey.get(row.sourceKey());
+            if (contentId == null) {
+                progress.unmatched++;
+                continue;
+            }
+            records.add(new ContentVectorRecord(
+                    contentId,
+                    ContentVectorCsv.decode(row.vectorBase64(), vectorDimension),
+                    row.modelVersion()
+            ));
+        }
+
+        contentVectorService.upsertAll(records);
+        progress.rows += rows.size();
+        progress.loaded += records.size();
+    }
+
+    /** 람다 안에서 누적하려고 둔 가변 카운터. */
+    private static final class LoadProgress {
+        long rows;
+        long loaded;
+        long unmatched;
+    }
+}

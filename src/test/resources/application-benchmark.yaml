@@ -31,3 +31,11 @@ logging:
   level:
     org.hibernate.SQL: 'OFF'
     org.hibernate.orm.jdbc.bind: 'OFF'
+
+# 측정 대상 DB를 그대로 쓰므로 Qdrant도 건드리지 않는다. 켜두면 content 수와 point 수가
+# 어긋날 때 컬렉션을 지우고 다시 적재해 측정 중인 상태를 바꾼다.
+ai:
+  vectorstore:
+    qdrant:
+      load:
+        enabled: false

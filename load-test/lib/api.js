@@ -11,8 +11,8 @@ export const BASE = __ENV.BASE_URL || 'http://localhost:8080';
 /** 보드 하나에 담기는 콘텐츠 수. 백엔드 Board.ITEMS_PER_BOARD와 같은 값이어야 한다. */
 export const ITEMS_PER_BOARD = 8;
 
-/** content.id 상한. 시딩 결과가 바뀌면 같이 바꿀 것 (기본: BOOK 111,094 + MOVIE 40,109 + MUSIC 40,036). */
-export const MAX_CONTENT_ID = Number(__ENV.MAX_CONTENT_ID || 191239);
+/** content.id 상한. 시딩 결과가 바뀌면 같이 바꿀 것 (기본: 벡터 있는 콘텐츠만, 중복 제거 — BOOK 107,225 + MOVIE 39,237 + MUSIC 36,674). */
+export const MAX_CONTENT_ID = Number(__ENV.MAX_CONTENT_ID || 183136);
 
 /** 테스트로 만든 데이터를 나중에 골라내기 위한 접두사. cleanup.sql이 이 값을 쓴다. */
 export const PREFIX = 'loadtest';
