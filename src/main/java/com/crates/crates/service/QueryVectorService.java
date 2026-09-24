@@ -2,6 +2,7 @@ package com.crates.crates.service;
 
 import com.crates.crates.qdrant.PointRecord;
 import com.crates.crates.qdrant.QdrantPointOperations;
+import com.crates.crates.qdrant.VectorPayload;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -19,20 +20,25 @@ public class QueryVectorService {
     @Value("${ai.vectorstore.qdrant.query-collection-name}")
     private String collectionName;
 
-    public void upsert(Long queryId, String queryText, float[] vector) {
-        pointOperations.upsertPoint(collectionName, queryId, vector, Map.of("query", queryText));
+    public void upsert(QueryVectorRecord record) {
+        upsertAll(List.of(record));
     }
 
+    // 보드 제목과 벡터, 그 벡터를 만든 모델 버전을 함께 저장한다. 버전은 쓸 때만 필요하다.
     public void upsertAll(List<QueryVectorRecord> records) {
         List<PointRecord> points = records.stream()
-                .map(record -> new PointRecord(
-                        record.queryId(),
-                        record.vector(),
-                        Map.of("query", record.queryText())
-                ))
+                .map(record -> new PointRecord(record.queryId(), record.vector(), payloadOf(record)))
                 .toList();
 
         pointOperations.upsertPoints(collectionName, points);
+    }
+
+    private Map<String, Object> payloadOf(QueryVectorRecord record) {
+        return Map.of(
+                VectorPayload.QUERY, record.queryText(),
+                VectorPayload.MODEL_VERSION,
+                VectorPayload.requireModelVersion(record.modelVersion(), "queryId " + record.queryId())
+        );
     }
 
     public Optional<QueryMatch> findMostSimilarQuery(float[] targetVector) {
@@ -41,7 +47,7 @@ public class QueryVectorService {
                 .findFirst()
                 .map(result -> new QueryMatch(
                         result.id(),
-                        (String) result.payload().get("query"),
+                        (String) result.payload().get(VectorPayload.QUERY),
                         result.score()
                 ));
     }

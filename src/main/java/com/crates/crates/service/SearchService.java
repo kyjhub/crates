@@ -20,8 +20,8 @@ public class SearchService {
     private final BoardService boardService;
 
     /**
-     * 검색어를 임베딩 벡터로 바꾼다. 벡터 자체는 프론트로 내려주지 않고 내부 조회에만 쓴다.
-     * AI 서버가 닫혀 있는 동안에는 스텁 구현체가 재현 가능한 더미 벡터를 만들어준다.
+     * 검색어를 AI 서버에서 임베딩 벡터로 바꾼다. 벡터 자체는 프론트로 내려주지 않고 내부 조회에만 쓴다.
+     * 이 서비스에서 AI 서버를 부르는 곳은 여기뿐이다. AI 서버에 닿지 않으면 AiServerException이 난다.
      */
     public float[] getQueryVector(String keyword)
     {
