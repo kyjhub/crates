@@ -22,7 +22,7 @@ import java.sql.Statement;
  */
 @Component
 @RequiredArgsConstructor
-public class V2__SeedMovies extends BaseJavaMigration {
+public class V6__SeedMovies extends BaseJavaMigration {
 
     private static final String CSV_RESOURCE = "/data/movie.csv";
 

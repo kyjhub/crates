@@ -34,20 +34,32 @@ STRIDE=$(( (have - BOARDS) / 7 ))
 [ "$STRIDE" -gt 1000 ] && STRIDE=1000
 [ "$STRIDE" -lt 1 ] && STRIDE=1
 
-# 기준 계정을 API로 한 번 만든다. BCrypt 해시와 초기 취향 벡터를 SQL로는 만들 수 없어,
-# 이 계정에서 복사한다. 이미 있으면 건너뛴다.
+# 기준 계정을 한 번 만든다. 나머지 계정은 여기서 비밀번호 해시와 취향 벡터를 복사한다.
+#
+# 회원가입 API가 없어졌으므로(가입은 OAuth만 받는다) 계정 행은 SQL로 만든다. BCrypt 해시는
+# pgcrypto의 crypt(.., gen_salt('bf'))가 Spring BCryptPasswordEncoder와 같은 $2a$ 형식으로 만든다.
+# 이미 있으면 건너뛴다.
 if [ "$($PSQL1 "SELECT count(*) FROM users WHERE login_id='loadtest_seed'")" = "0" ]; then
-    printf '기준 계정 생성(API) ... '
-    code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/api/auth/signup \
-        -H 'Content-Type: application/json' \
-        -d '{"loginId":"loadtest_seed","pwd":"Loadtest!234","email":"loadtest_seed@example.com",
-             "nickname":"loadtest_seed","gender":"OTHER","birthYear":"1995-01-01"}')
-    case "$code" in 200|201) echo '완료';; *) echo "실패(HTTP $code) — 앱이 떠 있는지 확인하세요" >&2; exit 1;; esac
-    # 취향 벡터는 가입 트랜잭션이 커밋된 뒤에 보인다
-    for _ in $(seq 1 20); do
-        [ "$($PSQL1 "SELECT count(*) FROM user_vector uv JOIN users u ON u.id=uv.user_id WHERE u.login_id='loadtest_seed'")" = "1" ] && break
-        sleep 1
-    done
+    printf '기준 계정 생성(SQL) ... '
+    $PSQL1 "CREATE EXTENSION IF NOT EXISTS pgcrypto" >/dev/null
+    $PSQL1 "INSERT INTO users (login_id, pwd, email, nickname, birth_date, role, gender, login_type, created_at, updated_at)
+            VALUES ('loadtest_seed', crypt('Loadtest!234', gen_salt('bf', 10)), 'loadtest_seed@example.com',
+                    'loadtest_seed', DATE '1995-01-01', 'USER', 'OTHER', 'LOCAL', now(), now())" >/dev/null
+    echo '완료'
+fi
+
+# 취향 벡터는 실제 가입 흐름과 같은 API로 만든다. 콘텐츠 벡터가 Qdrant에 있어 SQL로는 평균을 낼 수 없다.
+# 도메인마다 첫 콘텐츠를 하나씩 고른다(3개). 값 자체는 측정에 영향이 없고, 있기만 하면 된다.
+if [ "$($PSQL1 "SELECT count(*) FROM user_vector uv JOIN users u ON u.id=uv.user_id WHERE u.login_id='loadtest_seed'")" = "0" ]; then
+    printf '기준 계정 취향 콘텐츠 선택(API) ... '
+    token=$(curl -s -X POST http://localhost:8080/api/auth/login -H 'Content-Type: application/json' \
+        -d '{"loginId":"loadtest_seed","pwd":"Loadtest!234"}' \
+        | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['accessToken'])" 2>/dev/null || true)
+    [ -n "$token" ] || { echo "로그인 실패 — 앱이 떠 있는지 확인하세요" >&2; exit 1; }
+    ids=$($PSQL1 "SELECT string_agg(id::text, ',' ORDER BY id) FROM (SELECT min(id) AS id FROM content GROUP BY dtype) t")
+    code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/api/users/me/initial-contents \
+        -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "{\"contentIds\":[$ids]}")
+    case "$code" in 200) echo "완료 (콘텐츠 $ids)";; *) echo "실패(HTTP $code)" >&2; exit 1;; esac
 fi
 
 echo "준비: 계정 ${USERS}개 / 보드 ${BOARDS}개 / 계정당 좋아요 ${LIKES}건 (콘텐츠 간격 ${STRIDE})"

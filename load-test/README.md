@@ -85,8 +85,10 @@ docker compose --env-file crates_server.env up -d --build
 대부분을 SQL로 꽂는다. API로 좋아요 200건을 만들면 요청 200번 + 비동기 재계산 200번이라
 수십 초가 걸리고, **준비 자체가 시스템을 데워 측정 조건을 바꾼다.** SQL이면 1초 안쪽이다.
 
-> BCrypt 해시와 초기 취향 벡터는 SQL로 만들 수 없어, 기준 계정(`loadtest_seed`) 하나만
-> API 회원가입으로 만들고 나머지는 거기서 복사한다. 비밀번호는 전부 `Loadtest!234`.
+> 기준 계정(`loadtest_seed`) 하나만 따로 만들고 나머지는 거기서 비밀번호 해시와 취향 벡터를 복사한다.
+> 회원가입 API가 없어져(가입은 OAuth만) 계정 행은 SQL로 만든다. BCrypt 해시는 pgcrypto가 만든다.
+> 취향 벡터는 콘텐츠 벡터가 Qdrant에 있어 SQL로 평균을 낼 수 없으므로, 가입 직후 콘텐츠 선택
+> API(`POST /api/users/me/initial-contents`)로 만든다. 비밀번호는 전부 `Loadtest!234`.
 
 **왜 나눴나** — 그동안 k6가 데이터 생성까지 겸했다. 그래서 실행마다 상태가 누적돼 출발점이
 달라졌고, 그것이 "개선을 퇴행으로 잘못 읽은" 원인이었다(아래 4-9 참고).

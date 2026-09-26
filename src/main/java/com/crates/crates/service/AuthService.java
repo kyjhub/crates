@@ -2,12 +2,9 @@ package com.crates.crates.service;
 
 import com.crates.crates.DTO.LoginRequestDto;
 import com.crates.crates.DTO.ProfileRequestDto;
-import com.crates.crates.DTO.SignupRequestDto;
 import com.crates.crates.DTO.TokenResponseDto;
 import com.crates.crates.Global.exception.BusinessException;
 import com.crates.crates.entity.user.User;
-import com.crates.crates.enumData.LoginType;
-import com.crates.crates.enumData.Role;
 import com.crates.crates.jwt.JwtTokenProvider;
 import com.crates.crates.repository.UserRepository;
 import com.crates.crates.user.CustomUserDetails;
@@ -15,7 +12,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,56 +21,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class AuthService {
 
     private final UserRepository userRepository;
-    private final PasswordEncoder passwordEncoder;
     private final AuthenticationManager authenticationManager;
-    private final UserVectorService userVectorService;
 
      private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenService refreshTokenService;
     private final OAuthTempTokenService oAuthTempTokenService;
-
-    @Transactional
-    public TokenResponseDto signup(SignupRequestDto request)
-    {
-        // 1. 중복 검사
-        if (userRepository.existsByLoginId(request.loginId()))
-        {
-            throw new BusinessException("이미 사용중인 아이디입니다.");
-        }
-        if (userRepository.existsByEmail(request.email()))
-        {
-            throw new BusinessException("이미 사용중인 이메일입니다.");
-        }
-        if (userRepository.existsByNickname(request.nickname()))
-        {
-            throw new BusinessException("이미 사용중인 닉네임입니다.");
-        }
-
-        // 2. 비밀번호 암호화 및 유저 저장
-        User user = User.builder()
-                .loginId(request.loginId())
-                .pwd(passwordEncoder.encode(request.pwd()))
-                .email(request.email())
-                .nickname(request.nickname())
-                .gender(request.gender())
-                .birthDate(request.birthYear())
-                .role(Role.USER)
-                .loginType(LoginType.LOCAL)
-                .provider(null)
-                .providerId(null)
-                .build();
-
-        User savedUser = userRepository.save(user);
-        // 취향 벡터 자리를 0으로 만들어둔다. 실제 값은 AI 서버의 배치가 채운다.
-        userVectorService.initializeFor(savedUser);
-
-        String accessToken = jwtTokenProvider.createAccessToken(savedUser.getId()); // JWT 연결 시
-        String refreshToken = refreshTokenService.issue(savedUser.getId());
-
-
-        // 3. 회원가입 완료 후 즉시 로그인을 위한 JWT 발급
-        return TokenResponseDto.builder().accessToken(accessToken).refreshToken(refreshToken).build();
-    }
 
     @Transactional
     public TokenResponseDto login(LoginRequestDto request)

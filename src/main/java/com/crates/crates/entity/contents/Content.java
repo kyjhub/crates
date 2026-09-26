@@ -27,7 +27,7 @@ public abstract class Content {
      *
      * <p>AI 서버와 벡터 CSV가 콘텐츠를 가리키는 id다. Qdrant는 content.id로 저장하므로,
      * 벡터를 적재하거나 AI 서버가 벡터를 고쳐 보낼 때 이 값으로 content.id를 찾는다.
-     * 컬럼과 (dtype, source_key) 유일성은 V0_1이 만든다.</p>
+     * 컬럼과 (dtype, source_key) 유일성은 V1__ContentSchema가 만든다.</p>
      */
     @Column(nullable = false, updatable = false)
     private String sourceKey;

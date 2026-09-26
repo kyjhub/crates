@@ -22,7 +22,7 @@ public interface ContentRepository extends JpaRepository<Content, Long> {
 
     /**
      * 원본 id(source_key)로 content.id를 찾는다. 벡터 CSV 적재에 쓴다.
-     * (dtype, source_key) 유니크 인덱스(V0_1)를 탄다. 없는 키는 결과에서 빠진다.
+     * (dtype, source_key) 유니크 인덱스(V1)를 탄다. 없는 키는 결과에서 빠진다.
      */
     @Query("SELECT new com.crates.crates.DTO.ContentSourceKeyDto(c.id, c.sourceKey) " +
             "FROM Content c WHERE c.dtype = :dtype AND c.sourceKey IN :sourceKeys")

@@ -44,8 +44,8 @@ public interface BoardFeedbackRepository extends JpaRepository<BoardFeedback, Lo
      *   이 방식        Hash Anti Join -> 삭제된 100건만 읽음     buffers   8   0.090ms
      * </pre>
      *
-     * <p>{@code idx_board_deleted}(V8)가 이 배제를 받친다. {@code deleted_at IS NOT NULL}은
-     * 쿼리에 상수로 박혀 있어 플래너가 부분 인덱스 매칭을 증명할 수 있다 — V7의 규칙과 같다.</p>
+     * <p>{@code idx_board_deleted}(V3)가 이 배제를 받친다. {@code deleted_at IS NOT NULL}은
+     * 쿼리에 상수로 박혀 있어 플래너가 부분 인덱스 매칭을 증명할 수 있다 — V3에 적은 공통 근거와 같다.</p>
      *
      * <p>서브쿼리에서 {@code f.board}가 아니라 {@code f.board.id}를 쓰는 것이 중요하다.
      * 전자는 board로 조인을 유발해 없애려던 비용이 되돌아온다. 후자는 FK 컬럼을 그대로 쓴다.</p>

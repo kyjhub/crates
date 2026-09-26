@@ -62,7 +62,7 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
      *
      * <p>COALESCE는 "내 보관함에 들어온 시각"을 뜻한다. 좋아요한 보드면 좋아요를 누른 시각,
      * 내가 만든 보드면 생성 시각이다. 둘 다인 보드는 좋아요 시각을 쓴다. 두 값 모두 항상
-     * 채워지므로(saveFeedback, newUserBoard, likeNewBoard, V4__SeedBoards) null이 새지 않는다.</p>
+     * 채워지므로(saveFeedback, newUserBoard, likeNewBoard) null이 새지 않는다.</p>
      *
      * <p>좋아요를 <b>LEFT JOIN</b>으로 바꾼 이유는 정렬 키(f.createdAt)를 꺼내야 해서다.
      * EXISTS 서브쿼리로는 조건 판정만 되고 값을 가져올 수 없다. uk_board_feedback_board_user가
@@ -70,7 +70,7 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
      * 불어나지 않아 DISTINCT가 필요 없다. (이 제약이 없었다면 페이징 개수가 통째로 틀어진다.)</p>
      *
      * <p>소유자 조인을 <b>명시적 LEFT JOIN</b>으로 쓴다. b.user.id로 적으면 구현체에 따라
-     * 암묵적 INNER JOIN이 되어, 소유자가 없는 전역 공용 보드(AI_RECOMMEND, PRE_MADE)가
+     * 암묵적 INNER JOIN이 되어, 소유자가 없는 전역 공용 보드(AI_RECOMMEND)가
      * 좋아요 조건을 만족해도 통째로 빠질 수 있다. 에러가 아니라 "일부가 안 보이는" 증상으로만
      * 드러나므로 애매하게 두지 않는다.</p>
      */
@@ -105,7 +105,7 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
      *
      * <p>삭제된 보드는 조인이 아니라 {@code NOT EXISTS}로 배제한다. 살아있는 보드가 사실상
      * 전부라 조인하면 비용이 O(전체 보드)가 되지만, 삭제된 보드는 극소수라 배제하면
-     * O(삭제된 보드)가 된다. idx_board_deleted(V8)가 받친다 — findLikedBoardsWithTime과 같은 이유다.</p>
+     * O(삭제된 보드)가 된다. idx_board_deleted(V3)가 받친다 — findLikedBoardsWithTime과 같은 이유다.</p>
      *
      * <p>동률 기준은 {@code b.id DESC}로 원본을 그대로 둔다. 좋아요 갈래의 인덱스 순서는
      * (created_at DESC, f.id DESC)라 b.id와 어긋나지만, PostgreSQL의 Incremental Sort가

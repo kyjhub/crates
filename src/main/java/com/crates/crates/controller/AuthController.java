@@ -22,18 +22,7 @@ public class AuthController {
     private final AuthService authService;
     private final JwtTokenProvider jwtTokenProvider;
 
-    // 1. 로컬(직접) 회원가입
-    @PostMapping("/signup")
-    public ResponseEntity<ApiResponse<AccessTokenResponseDto>> signup(@Valid @RequestBody SignupRequestDto request, HttpServletResponse response)
-    {
-        TokenResponseDto tokenResponse = authService.signup(request);
-        ResponseCookie cookie = buildRefreshTokenCookie(tokenResponse.refreshToken(), jwtTokenProvider.getRefreshExpirySeconds());
-        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
-        return ResponseEntity.status(HttpStatus.OK)
-                .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.accessToken()), "로컬 회원가입 성공!"));
-    }
-
-    // 2. 로컬(직접) 로그인
+    // 로컬 로그인. 회원가입은 OAuth만 받는다 — 로컬 계정은 부하테스트용(load-test/seed.sh)으로만 만들어진다.
     @PostMapping("/login")
     public ResponseEntity<ApiResponse<AccessTokenResponseDto>> login(@Valid @RequestBody LoginRequestDto request, HttpServletResponse response)
     {
@@ -44,7 +33,7 @@ public class AuthController {
                 .body(new ApiResponse<>(true, new AccessTokenResponseDto(tokenResponse.accessToken()), "로컬 로그인 성공!"));
     }
 
-    // 3. OAuth 신규 가입 후 프로필 완성 (JWT 인증 필수)
+    // OAuth 신규 가입 후 프로필 완성 (JWT 인증 필수)
     @PostMapping("/profile")
     public ResponseEntity<ApiResponse<Void>> completeProfile(
             @Valid @RequestBody ProfileRequestDto request,

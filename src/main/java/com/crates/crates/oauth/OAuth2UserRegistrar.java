@@ -5,7 +5,6 @@ import com.crates.crates.enumData.AuthProvider;
 import com.crates.crates.enumData.LoginType;
 import com.crates.crates.enumData.Role;
 import com.crates.crates.repository.UserRepository;
-import com.crates.crates.service.UserVectorService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
@@ -24,7 +23,6 @@ import java.util.Map;
 public class OAuth2UserRegistrar {
 
     private final UserRepository userRepository;
-    private final UserVectorService userVectorService;
 
     @Transactional
     public User resolve(String registrationId, Map<String, Object> attributes)
@@ -58,9 +56,9 @@ public class OAuth2UserRegistrar {
                 .role(Role.USER)
                 .build();
 
+        // 취향 벡터는 여기서 만들지 않는다. 가입 직후 화면에서 사용자가 콘텐츠를 고르면
+        // 그 평균으로 만든다(UserVectorService.initialize).
         User savedUser = userRepository.save(user);
-        // 로컬 가입과 같은 규칙. 취향 벡터 자리를 0으로 만들어두고 값은 AI 배치가 채운다.
-        userVectorService.initializeFor(savedUser);
 
         log.info("신규 소셜 계정 가입 완료. 가입 경로: {}", savedUser.getProvider());
         return savedUser;

@@ -1,35 +1,46 @@
 package com.crates.crates.service;
 
+import com.crates.crates.DTO.BoardContentIdDto;
+import com.crates.crates.DTO.LikedBoardDto;
+import com.crates.crates.Global.exception.BusinessException;
+import com.crates.crates.entity.user.User;
 import com.crates.crates.entity.user.UserVector;
 import com.crates.crates.enumData.Rating;
 import com.crates.crates.repository.BoardFeedbackRepository;
 import com.crates.crates.repository.BoardItemRepository;
+import com.crates.crates.repository.UserRepository;
 import com.crates.crates.repository.UserVectorRepository;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
-import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 import org.springframework.test.util.ReflectionTestUtils;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
-import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class UserVectorServiceTest {
 
     private static final Long USER_ID = 42L;
     private static final int DIMENSION = 768;
-    private static final LocalDateTime NOW = LocalDateTime.of(2026, 9, 17, 12, 0);
+    private static final double ALPHA = 0.25;
 
     @Mock private UserVectorRepository userVectorRepository;
+    @Mock private UserRepository userRepository;
     @Mock private BoardFeedbackRepository boardFeedbackRepository;
     @Mock private BoardItemRepository boardItemRepository;
     @Mock private ContentVectorService contentVectorService;
@@ -40,169 +51,186 @@ class UserVectorServiceTest {
     @BeforeEach
     void setUp()
     {
-        service = new UserVectorService(userVectorRepository, boardFeedbackRepository,
+        service = new UserVectorService(userVectorRepository, userRepository, boardFeedbackRepository,
                 boardItemRepository, contentVectorService, metrics);
         ReflectionTestUtils.setField(service, "vectorDimension", DIMENSION);
-        ReflectionTestUtils.setField(service, "initialSeed", 20260907L);
+        ReflectionTestUtils.setField(service, "decayAlpha", ALPHA);
     }
 
-    @AfterEach
-    void clearTransactionState()
-    {
-        // ThreadLocal이라 테스트가 중간에 실패해도 다음 테스트로 새지 않게 반드시 되돌린다.
-        // (false를 주면 내부적으로 null이 되어 완전히 해제된다.)
-        TransactionSynchronizationManager.setCurrentTransactionReadOnly(false);
-    }
+    @Nested
+    class InitializeFromSelectedContents {
 
-    @AfterEach
-    void doesNotRecalculateLikesOrRecordRecalculationMetrics()
-    {
-        verify(boardFeedbackRepository, never()).findLikedBoardsWithTime(anyLong(), any());
-        verifyNoInteractions(boardItemRepository, contentVectorService, metrics);
-    }
-
-    @Test
-    void todaysVectorIsReturnedWithoutCheckingLikes()
-    {
-        UserVector stored = storedVector(NOW.minusHours(1));
-        float[] original = stored.getUserVector();
-        LocalDateTime updatedAt = stored.getUpdatedAt();
-
-        try (MockedStatic<LocalDateTime> time = mockStatic(LocalDateTime.class))
+        @Test
+        void averageOfSelectedContentsBecomesTheVectorAndIdsAreKept()
         {
-            time.when(LocalDateTime::now).thenReturn(NOW);
+            when(userVectorRepository.existsById(USER_ID)).thenReturn(false);
+            when(userRepository.getReferenceById(USER_ID)).thenReturn(mock(User.class));
+            when(contentVectorService.findVectors(Set.of(1L, 2L)))
+                    .thenReturn(Map.of(1L, axis(0), 2L, axis(1)));
 
-            assertSame(original, service.resolveVector(USER_ID));
-            assertEquals(updatedAt, stored.getUpdatedAt());
+            service.initialize(USER_ID, List.of(1L, 2L));
+
+            ArgumentCaptor<UserVector> saved = ArgumentCaptor.forClass(UserVector.class);
+            verify(userVectorRepository).save(saved.capture());
+            float[] vector = saved.getValue().getUserVector();
+
+            // 두 축의 평균을 정규화하면 각 축이 1/√2
+            assertEquals(1 / Math.sqrt(2), vector[0], 1e-6);
+            assertEquals(1 / Math.sqrt(2), vector[1], 1e-6);
+            assertEquals(1.0, norm(vector), 1e-6);
+            // 좋아요 재계산이 다시 쓸 수 있도록 고른 id를 고른 순서대로 남긴다
+            assertEquals(List.of(1L, 2L), saved.getValue().getInitialContentIds());
         }
 
-        verifyNoInteractions(boardFeedbackRepository);
-    }
-
-    @Test
-    void oldVectorWithLikesIsPreserved()
-    {
-        UserVector stored = storedVector(NOW.minusDays(1));
-        float[] original = stored.getUserVector();
-        float[] originalValues = original.clone();
-        LocalDateTime updatedAt = stored.getUpdatedAt();
-        when(boardFeedbackRepository.existsByUserIdAndRating(USER_ID, Rating.LIKE)).thenReturn(true);
-
-        try (MockedStatic<LocalDateTime> time = mockStatic(LocalDateTime.class))
+        @Test
+        void rejectsWhenAlreadySelected()
         {
-            time.when(LocalDateTime::now).thenReturn(NOW);
+            when(userVectorRepository.existsById(USER_ID)).thenReturn(true);
 
-            assertSame(original, service.resolveVector(USER_ID));
-            assertArrayEquals(originalValues, stored.getUserVector());
-            assertEquals(updatedAt, stored.getUpdatedAt());
+            assertThrows(BusinessException.class, () -> service.initialize(USER_ID, List.of(1L)));
+            verify(userVectorRepository, never()).save(any());
         }
 
-        verify(boardFeedbackRepository).existsByUserIdAndRating(USER_ID, Rating.LIKE);
-    }
-
-    @Test
-    void coldStartVectorRefreshesOncePerDay()
-    {
-        UserVector stored = storedVector(NOW.minusDays(1));
-        float[] original = stored.getUserVector().clone();
-        LocalDateTime laterToday = NOW.plusHours(1);
-        LocalDateTime tomorrow = NOW.plusDays(1);
-        when(boardFeedbackRepository.existsByUserIdAndRating(USER_ID, Rating.LIKE)).thenReturn(false);
-
-        try (MockedStatic<LocalDateTime> time = mockStatic(LocalDateTime.class))
+        @Test
+        void rejectsDuplicateContents()
         {
-            time.when(LocalDateTime::now).thenReturn(NOW);
-            float[] fresh = service.resolveVector(USER_ID);
-
-            assertSame(fresh, stored.getUserVector());
-            assertFalse(Arrays.equals(original, fresh));
-            assertEquals(DIMENSION, fresh.length);
-            assertEquals(1.0, norm(fresh), 1e-6);
-            assertEquals(NOW, stored.getUpdatedAt());
-
-            time.when(LocalDateTime::now).thenReturn(laterToday);
-            assertSame(fresh, service.resolveVector(USER_ID));
-            assertEquals(NOW, stored.getUpdatedAt());
-            verify(boardFeedbackRepository, times(1)).existsByUserIdAndRating(USER_ID, Rating.LIKE);
-
-            time.when(LocalDateTime::now).thenReturn(tomorrow);
-            float[] nextDay = service.resolveVector(USER_ID);
-            assertFalse(Arrays.equals(fresh, nextDay));
-            assertEquals(tomorrow, stored.getUpdatedAt());
-            assertSame(nextDay, stored.getUserVector());
+            assertThrows(BusinessException.class, () -> service.initialize(USER_ID, List.of(1L, 1L)));
+            verifyNoInteractions(contentVectorService);
         }
 
-        verify(boardFeedbackRepository, times(2)).existsByUserIdAndRating(USER_ID, Rating.LIKE);
-    }
-
-    /**
-     * 읽기 전용 트랜잭션에 합류하면 Hibernate가 플러시를 막아 저장이 조용히 사라진다.
-     * 그 상황을 예외로 바꾸는 가드가 살아 있는지 고정한다.
-     */
-    @Test
-    void refreshInsideReadOnlyTransactionFailsLoudlyInsteadOfSilentlySkippingTheSave()
-    {
-        UserVector stored = storedVector(NOW.minusDays(1));
-        float[] originalValues = stored.getUserVector().clone();
-        LocalDateTime updatedAt = stored.getUpdatedAt();
-        when(boardFeedbackRepository.existsByUserIdAndRating(USER_ID, Rating.LIKE)).thenReturn(false);
-
-        TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
-        try (MockedStatic<LocalDateTime> time = mockStatic(LocalDateTime.class))
+        @Test
+        void rejectsFewerThanOneOrMoreThanTen()
         {
-            time.when(LocalDateTime::now).thenReturn(NOW);
+            assertThrows(BusinessException.class, () -> service.initialize(USER_ID, List.of()));
+            assertThrows(BusinessException.class, () -> service.initialize(USER_ID,
+                    List.of(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L)));
+            verifyNoInteractions(contentVectorService);
+        }
 
-            assertThrows(IllegalStateException.class, () -> service.resolveVector(USER_ID));
-            // 예외만 던지고 끝나는 게 아니라, 기존 값이 훼손되지 않은 채 남아야 한다.
-            assertArrayEquals(originalValues, stored.getUserVector());
-            assertEquals(updatedAt, stored.getUpdatedAt());
+        /** 일부만으로 평균을 내면 사용자는 고른 대로 반영됐다고 믿는데 실제 벡터는 다르게 만들어진다. */
+        @Test
+        void rejectsWhenAnySelectedContentHasNoVector()
+        {
+            when(contentVectorService.findVectors(Set.of(1L, 999L))).thenReturn(Map.of(1L, axis(0)));
+
+            assertThrows(BusinessException.class, () -> service.initialize(USER_ID, List.of(1L, 999L)));
+            verify(userVectorRepository, never()).save(any());
         }
     }
 
-    /**
-     * 가드는 "쓰기가 필요한 지점"에만 있어야 한다. 갱신할 것이 없으면 읽기 전용이어도
-     * 정상 동작이므로, 여기서 예외가 나면 멀쩡한 요청까지 막는 과잉 방어다.
-     */
-    @Test
-    void readOnlyTransactionIsFineWhenNoRefreshIsNeeded()
-    {
-        UserVector stored = storedVector(NOW.minusHours(1));
-        float[] original = stored.getUserVector();
+    @Nested
+    class RecalculateOnLikeChange {
 
-        TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
-        try (MockedStatic<LocalDateTime> time = mockStatic(LocalDateTime.class))
+        @Test
+        void recomputesFromSelectedContentsWhenLikesDropToZero()
         {
-            time.when(LocalDateTime::now).thenReturn(NOW);
+            UserVector stored = stored(axis(5), List.of(1L));
+            when(boardFeedbackRepository.findLikedBoardsWithTime(USER_ID, Rating.LIKE)).thenReturn(List.of());
+            when(contentVectorService.findVectors(List.of(1L))).thenReturn(Map.of(1L, axis(0)));
 
-            assertSame(original, service.resolveVector(USER_ID));
+            service.recalculateFor(USER_ID);
+
+            assertArrayEquals(axis(0), stored.getUserVector());
+            verify(metrics).recordRecalculation(any(), eq(UserVectorMetrics.Result.UPDATED));
+        }
+
+        /**
+         * 좋아요한 날이 하루면 그 보드의 가중치는 (1-α)^0 = 1, 가입 벡터는 (1-α)^1 = 0.75.
+         * 결과는 normalize(1·보드 + 0.75·가입)이다.
+         */
+        @Test
+        void selectedContentsAreWeightedOneRankAfterTheOldestLikeDay()
+        {
+            UserVector stored = stored(axis(5), List.of(1L));
+            likedBoardOf(10L, LocalDateTime.of(2026, 9, 20, 10, 0), 100L,
+                    Map.of(100L, axis(1), 1L, axis(0)));
+
+            service.recalculateFor(USER_ID);
+
+            float[] vector = stored.getUserVector();
+            double norm = Math.sqrt(1 + 0.75 * 0.75);
+            assertEquals(1.0 / norm, vector[1], 1e-6);
+            assertEquals(0.75 / norm, vector[0], 1e-6);
+            // 고른 콘텐츠는 좋아요 보드와 같은 조회에 실린다
+            verify(contentVectorService).findVectors(Set.of(100L, 1L));
+        }
+
+        /** 이 마이그레이션 전에 만들어진 행은 고른 기록이 빈 배열이다. 좋아요만으로 계산한다. */
+        @Test
+        void rowsWithoutSelectedContentsUseLikesOnly()
+        {
+            UserVector stored = stored(axis(5), List.of());
+            likedBoardOf(10L, LocalDateTime.of(2026, 9, 20, 10, 0), 100L, Map.of(100L, axis(1)));
+
+            service.recalculateFor(USER_ID);
+
+            assertArrayEquals(axis(1), stored.getUserVector());
+        }
+
+        /** Qdrant 조회가 깨졌을 가능성이 커서, 가입 벡터로 되돌리면 좋아요 이력이 조용히 사라진다. */
+        @Test
+        void keepsCurrentVectorWhenNoLikedBoardVectorCanBeRead()
+        {
+            float[] before = axis(5);
+            UserVector stored = stored(before, List.of(1L));
+            when(boardFeedbackRepository.findLikedBoardsWithTime(USER_ID, Rating.LIKE))
+                    .thenReturn(List.of(new LikedBoardDto(10L, LocalDateTime.now())));
+            when(boardItemRepository.findContentIdsByBoardIds(List.of(10L)))
+                    .thenReturn(List.of(new BoardContentIdDto(10L, 100L)));
+            when(contentVectorService.findVectors(any())).thenReturn(Map.of());
+
+            service.recalculateFor(USER_ID);
+
+            assertSame(before, stored.getUserVector());
+            verify(metrics).recordRecalculation(any(), eq(UserVectorMetrics.Result.UNCHANGED));
         }
     }
 
     @Test
-    void getVectorRemainsAReadOnlyLookupForOldVectors()
+    void recommendationUsesStoredVector()
     {
-        UserVector stored = storedVector(NOW.minusDays(1));
-        float[] original = stored.getUserVector();
-        LocalDateTime updatedAt = stored.getUpdatedAt();
+        stored(axis(3), List.of(1L));
 
-        assertSame(original, service.getVector(USER_ID));
-        assertEquals(updatedAt, stored.getUpdatedAt());
-        verifyNoInteractions(boardFeedbackRepository);
+        assertArrayEquals(axis(3), service.getVector(USER_ID));
     }
 
-    private UserVector storedVector(LocalDateTime updatedAt)
+    @Test
+    void noVectorBeforeContentsAreSelected()
     {
-        float[] vector = new float[DIMENSION];
-        vector[0] = 1.0f;
+        when(userVectorRepository.findById(USER_ID)).thenReturn(Optional.empty());
+
+        assertThrows(BusinessException.class, () -> service.getVector(USER_ID));
+    }
+
+    private UserVector stored(float[] vector, List<Long> initialContentIds)
+    {
         UserVector stored = UserVector.builder()
                 .userVector(vector)
-                .updatedAt(updatedAt)
+                .initialContentIds(initialContentIds)
+                .updatedAt(LocalDateTime.now())
                 .build();
         when(userVectorRepository.findById(USER_ID)).thenReturn(Optional.of(stored));
         return stored;
     }
 
-    private double norm(float[] vector)
+    private void likedBoardOf(Long boardId, LocalDateTime likedAt, Long contentId, Map<Long, float[]> vectors)
+    {
+        when(boardFeedbackRepository.findLikedBoardsWithTime(USER_ID, Rating.LIKE))
+                .thenReturn(List.of(new LikedBoardDto(boardId, likedAt)));
+        when(boardItemRepository.findContentIdsByBoardIds(List.of(boardId)))
+                .thenReturn(List.of(new BoardContentIdDto(boardId, contentId)));
+        when(contentVectorService.findVectors(any())).thenReturn(vectors);
+    }
+
+    /** 한 축만 1인 단위 벡터. 결과를 손으로 계산해 비교하기 쉽다. */
+    private static float[] axis(int index)
+    {
+        float[] vector = new float[DIMENSION];
+        vector[index] = 1.0f;
+        return vector;
+    }
+
+    private static double norm(float[] vector)
     {
         double squaredSum = 0;
         for (float value : vector)
