@@ -465,16 +465,21 @@ class RepositoryBenchmarkTest {
         return ids;
     }
 
-    /** 시더가 만들지 않는 USER_CUSTOM 보드. 롤백되지만 통계는 갱신해야 플래너가 제대로 고른다. */
+    /**
+     * 한 계정에 USER_CUSTOM 보드를 몰아준다("내가 만든 보드"가 많은 계정). 시더는 계정마다 고르게
+     * 나눠 주므로(1만 개 / 1,000명 = 10개) 이 규모는 여기서 만든다. 롤백되지만 통계는 갱신해야
+     * 플래너가 제대로 고른다.
+     *
+     * <p>예전에는 AI 보드의 signature를 복사해 만들었는데, 그러면 AI 보드 수보다 많이 만들 수 없다
+     * (AI 보드 1만 개에서 "2만 개"를 요청하면 조용히 1만 개만 생긴다). signature는 사용자 안에서
+     * 유일하기만 하면 되므로 번호로 만든다. 시더의 보드와 겹칠 일이 없는 형식이다.</p>
+     */
     private String seedUserCustomBoards(Long userId, int count) {
         jdbcTemplate.update("""
                 INSERT INTO board (user_id, board_type, visibility, title, content_signature, like_count, created_at)
-                SELECT ?, 'USER_CUSTOM', 'PRIVATE', 'bench-custom-' || b.id, b.content_signature, 0,
-                       now() - (row_number() OVER (ORDER BY b.id) || ' minutes')::interval
-                  FROM board b
-                 WHERE b.board_type = 'AI_RECOMMEND' AND b.deleted_at IS NULL
-                 ORDER BY b.id
-                 LIMIT ?
+                SELECT ?, 'USER_CUSTOM', 'PRIVATE', 'bench-custom-' || g, 'bench-' || g, 0,
+                       now() - (g || ' minutes')::interval
+                  FROM generate_series(1, ?) g
                 """, userId, count);
         jdbcTemplate.execute("ANALYZE board");   // ANALYZE는 트랜잭션 안에서 돌고 롤백과 함께 되돌아간다
         return jdbcTemplate.queryForObject(
