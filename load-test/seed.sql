@@ -10,8 +10,9 @@
 --
 -- psql 변수로 규모를 받는다.
 --   :users   만들 계정 수
---   :boards  만들 보드 수 (AI_RECOMMEND)
---   :likes   계정당 좋아요 수 (boards 이하여야 한다)
+--   :boards  만들 AI 보드 수 (AI_RECOMMEND, 소유자 없음)
+--   :custom  만들 사용자 보드 수 (USER_CUSTOM, 계정들이 고르게 나눠 가짐. 0이면 만들지 않는다)
+--   :likes   계정당 좋아요 수 (boards + custom 이하여야 한다)
 --   :stride  보드 안에서 콘텐츠를 얼마나 벌려 담을지 (seed.sh가 계산해 넘긴다)
 --
 -- 전제: loadtest_seed 계정과 그 취향 벡터가 미리 있어야 한다. 비밀번호 해시와 취향 벡터를
@@ -89,6 +90,40 @@ FROM seeded_board s
 JOIN board b ON b.content_signature = s.signature AND b.board_type = 'AI_RECOMMEND'
 CROSS JOIN generate_series(1, 8) j;
 
+-- ── 사용자 보드 (USER_CUSTOM) ───────────────────────────────
+-- AI 보드가 쓴 위치 다음(:boards)부터 같은 슬라이딩 윈도우로 이어 쓴다. 그래서 AI 보드와 구성이
+-- 겹치지 않고, 사용자 보드끼리도 signature가 전부 다르다(uk_board_user_signature).
+--
+-- 계정마다 고르게 나눠 가진다(보드 k의 주인은 k번째 계정을 계정 수로 나눈 나머지).
+-- 공개로 만든다 — 앱이 사용자 보드를 만들 때(cloneAsUserBoard, 새 보드 저장)의 기본값이다.
+-- 만든 시각을 1분씩 벌린다. 보관함("만든 것", "전체" 탭)이 만든 시각 최신순으로 정렬하므로,
+-- 전부 같은 시각이면 정렬이 id 동률 비교로만 갈려 실제와 다른 분포가 된다.
+CREATE TEMP TABLE seeded_owner ON COMMIT DROP AS
+SELECT id, (row_number() OVER (ORDER BY id) - 1) AS oi, count(*) OVER () AS total
+FROM users WHERE login_id LIKE 'loadtest_u%';
+
+CREATE TEMP TABLE seeded_custom ON COMMIT DROP AS
+SELECT k,
+       array_agg(c.id ORDER BY j) AS ids,
+       string_agg(c.id::text, ',' ORDER BY j) AS signature
+FROM generate_series(1, :custom) k
+CROSS JOIN generate_series(1, 8) j
+JOIN content_pos c ON c.pos = (:boards + k - 1) + (j - 1) * :stride
+GROUP BY k;
+
+INSERT INTO board (user_id, board_type, visibility, title, content_signature, like_count, created_at)
+SELECT o.id, 'USER_CUSTOM', 'PUBLIC', 'loadtest-custom-' || s.k, s.signature, 0,
+       now() - (s.k || ' minutes')::interval
+FROM seeded_custom s
+JOIN seeded_owner o ON o.oi = (s.k - 1) % o.total
+ON CONFLICT DO NOTHING;
+
+INSERT INTO board_item (board_id, content_id, slot_no)
+SELECT b.id, s.ids[j], j
+FROM seeded_custom s
+JOIN board b ON b.title = 'loadtest-custom-' || s.k AND b.board_type = 'USER_CUSTOM'
+CROSS JOIN generate_series(1, 8) j;
+
 -- ── 좋아요 ──────────────────────────────────────────────────
 -- 좋아요를 보드 전 구간에 고르게 흩뿌린다.
 --
@@ -104,9 +139,16 @@ CROSS JOIN generate_series(1, 8) j;
 --
 -- 시각을 하루씩 벌려 둔다. 가중치가 "좋아요한 날짜의 최신순 순위"라 전부 같은 날이면
 -- 가중치가 모두 1이 되어 실제와 다른 분포가 된다.
+--
+-- 넣는 순서를 시각순으로 고정한다(오래된 날 먼저, 같은 날 안에서는 사용자 순). 실제 서비스에서는
+-- 여러 사용자의 좋아요가 시간 순으로 뒤섞여 쌓이므로, 한 사용자의 좋아요는 힙 곳곳에 흩어진다.
+-- 순서를 정하지 않으면 조인 계획에 따라 한 사용자의 1만 건이 연속으로 들어가 84페이지에 몰리는데,
+-- 그러면 힙을 찾아가는 쿼리가 실제보다 싸게 나온다. 실측(2026-09-26): 커버링 인덱스를 빼도
+-- findLikedBoardsWithTime 이 149블록으로 나왔다 — 흩어져 있을 때는 1만 블록이다.
 WITH pool AS (
     SELECT id, (row_number() OVER (ORDER BY id) - 1) AS rn, count(*) OVER () AS total
-    FROM board WHERE title LIKE 'loadtest-seeded-%' AND deleted_at IS NULL
+    -- AI 보드와 사용자 보드 모두에 흩는다. 남의 공개 보드에 좋아요를 누르는 것이 실제 모습이다.
+    FROM board WHERE (title LIKE 'loadtest-seeded-%' OR title LIKE 'loadtest-custom-%') AND deleted_at IS NULL
 ),
 seeded_user AS (
     SELECT id, (row_number() OVER (ORDER BY id) - 1) AS ui
@@ -122,6 +164,7 @@ pick AS (
 INSERT INTO board_feedback (board_id, user_id, rating, created_at)
 SELECT p.id, pick.user_id, 'LIKE', now() - (pick.j || ' days')::interval
 FROM pick JOIN pool p ON p.rn = pick.rn
+ORDER BY pick.j DESC, pick.user_id
 ON CONFLICT DO NOTHING;
 
 -- like_count를 실제 좋아요 수와 맞춘다. 안 맞으면 인기 보드 정렬이 엉뚱해진다.
@@ -137,13 +180,13 @@ ANALYZE users; ANALYZE user_vector; ANALYZE board; ANALYZE board_item; ANALYZE b
 --   계정 보드 좋아요 인당좋아요 좋아요받은보드 구간1..구간5
 SELECT
     (SELECT count(*) FROM users WHERE login_id LIKE 'loadtest_u%')                                  AS users,
-    (SELECT count(*) FROM board WHERE title LIKE 'loadtest-seeded-%')                               AS boards,
+    (SELECT count(*) FROM board WHERE title LIKE 'loadtest-seeded-%' OR title LIKE 'loadtest-custom-%') AS boards,
     (SELECT count(*) FROM board_feedback)                                                           AS likes,
     COALESCE((SELECT round(avg(c)) FROM (SELECT count(*) c FROM board_feedback GROUP BY user_id) s), 0) AS per_user,
     (SELECT count(DISTINCT board_id) FROM board_feedback)                                           AS liked_boards,
     COALESCE((SELECT string_agg(cnt::text, ' ' ORDER BY bucket) FROM (
         SELECT b.bucket, count(f.id) AS cnt
         FROM (SELECT id, ntile(5) OVER (ORDER BY id) AS bucket
-              FROM board WHERE title LIKE 'loadtest-seeded-%') b
+              FROM board WHERE title LIKE 'loadtest-seeded-%' OR title LIKE 'loadtest-custom-%') b
         LEFT JOIN board_feedback f ON f.board_id = b.id
         GROUP BY b.bucket) x), '0 0 0 0 0')                                                         AS buckets;

@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # 부하테스트용 계정·보드·좋아요를 준비한다.
 #
-#   ./load-test/seed.sh [계정수] [보드수] [계정당좋아요]
+#   ./load-test/seed.sh [계정수] [AI보드수] [계정당좋아요] [사용자보드수]
 #   ./load-test/seed.sh 20 1000 0        # 기본 시나리오용 (좋아요 없는 계정 20개)
 #   ./load-test/seed.sh 1  1000 200      # 이력 200건짜리 계정 하나 (프로파일링용)
 #   ./load-test/seed.sh 200 20000 180    # 플래너가 인덱스를 고르기 시작하는 규모
+#   ./load-test/seed.sh 1000 10000 10000 10000   # 리포지토리 벤치마크 (AI 1만 + 사용자 보드 1만)
+#
+# 보드는 두 종류다. AI보드수만큼 AI_RECOMMEND(소유자 없음)를, 사용자보드수만큼 USER_CUSTOM을
+# 만든다(계정마다 고르게 나눠 가진다, 기본 0). 좋아요는 두 종류를 합친 전체에 흩어진다.
 #
 # k6와 역할이 다르다. 여기는 "측정하려는 상태"를 만들고, k6는 그 상태에 부하를 건다.
 # 그동안 k6가 둘을 겸하면서 실행마다 상태가 누적돼 비교가 깨졌다(docs 4-9).
@@ -15,22 +19,25 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./crates_server.env; set +a
 
-USERS="${1:-20}"; BOARDS="${2:-1000}"; LIKES="${3:-0}"
-[ "$LIKES" -le "$BOARDS" ] || { echo "계정당 좋아요($LIKES)가 보드 수($BOARDS)보다 많을 수 없습니다" >&2; exit 1; }
+USERS="${1:-20}"; BOARDS="${2:-1000}"; LIKES="${3:-0}"; CUSTOM="${4:-0}"
+TOTAL=$((BOARDS + CUSTOM))
+[ "$LIKES" -le "$TOTAL" ] || { echo "계정당 좋아요($LIKES)가 보드 수($TOTAL)보다 많을 수 없습니다" >&2; exit 1; }
+# 사용자 보드는 계정들이 나눠 가지므로 계정이 있어야 한다.
+[ "$CUSTOM" -eq 0 ] || [ "$USERS" -gt 0 ] || { echo "사용자 보드를 만들려면 계정이 1개 이상 필요합니다" >&2; exit 1; }
 
 PSQL="docker exec -i -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server psql -U $POSTGRESQL_USERNAME -d crates"
 PSQL1="docker exec -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server psql -U $POSTGRESQL_USERNAME -d crates -t -A -c"
 
-# 보드 하나는 콘텐츠를 stride 간격으로 8건 담는다(슬라이딩 윈도우).
-# 마지막 보드가 쓰는 위치가 (BOARDS-1) + 7*STRIDE 이므로 그것이 콘텐츠 수 안에 들어와야 한다.
+# 보드 하나는 콘텐츠를 stride 간격으로 8건 담는다(슬라이딩 윈도우). 사용자 보드는 AI 보드 다음 위치부터
+# 이어서 쓴다. 마지막 보드가 쓰는 위치가 (TOTAL-1) + 7*STRIDE 이므로 그것이 콘텐츠 수 안에 들어와야 한다.
 have=$($PSQL1 "SELECT count(*) FROM content")
-[ "$BOARDS" -le $((have - 7)) ] || {
+[ "$TOTAL" -le $((have - 7)) ] || {
     echo "보드가 너무 많습니다: 최대 $((have - 7))개 (콘텐츠 ${have}건)" >&2; exit 1; }
 
 # stride는 남는 공간을 7등분해 최대한 벌린다. 넓을수록 한 보드의 콘텐츠가 고루 퍼지고,
 # 보드 k와 k+stride가 콘텐츠 7건을 공유해 운영에 가까운 중복 분포가 된다.
 # 1000을 넘기지 않는 이유는 그 이상 벌려도 이득이 없고 상한만 줄기 때문이다.
-STRIDE=$(( (have - BOARDS) / 7 ))
+STRIDE=$(( (have - TOTAL) / 7 ))
 [ "$STRIDE" -gt 1000 ] && STRIDE=1000
 [ "$STRIDE" -lt 1 ] && STRIDE=1
 
@@ -62,9 +69,9 @@ if [ "$($PSQL1 "SELECT count(*) FROM user_vector uv JOIN users u ON u.id=uv.user
     case "$code" in 200) echo "완료 (콘텐츠 $ids)";; *) echo "실패(HTTP $code)" >&2; exit 1;; esac
 fi
 
-echo "준비: 계정 ${USERS}개 / 보드 ${BOARDS}개 / 계정당 좋아요 ${LIKES}건 (콘텐츠 간격 ${STRIDE})"
+echo "준비: 계정 ${USERS}개 / AI 보드 ${BOARDS}개 + 사용자 보드 ${CUSTOM}개 / 계정당 좋아요 ${LIKES}건 (콘텐츠 간격 ${STRIDE})"
 read -r n_users n_boards n_likes per_user liked_boards b1 b2 b3 b4 b5 <<<"$(
-    $PSQL -q -t -A -F' ' -v users="$USERS" -v boards="$BOARDS" -v likes="$LIKES" -v stride="$STRIDE" < load-test/seed.sql
+    $PSQL -q -t -A -F' ' -v users="$USERS" -v boards="$BOARDS" -v custom="$CUSTOM" -v likes="$LIKES" -v stride="$STRIDE" < load-test/seed.sql
 )"
 
 printf '  계정 %s / 보드 %s / 좋아요 %s (인당 %s)\n' "$n_users" "$n_boards" "$n_likes" "$per_user"

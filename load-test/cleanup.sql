@@ -53,3 +53,8 @@ SET lock_timeout = '30s';
 VACUUM (FULL, ANALYZE) board;
 VACUUM (FULL, ANALYZE) board_item;
 VACUUM (FULL, ANALYZE) board_feedback;
+-- 계정 쪽도 회수한다. 빠져 있어서 재시딩할 때마다 users 가 빈 페이지를 달고 불어났다
+-- (계정 1,003개가 25페이지면 될 것을 49페이지). 인덱스 없는 조회(풀스캔)를 비교할 때 그대로 숫자가 틀린다.
+VACUUM (FULL, ANALYZE) users;
+VACUUM (FULL, ANALYZE) user_vector;
+VACUUM (FULL, ANALYZE) user_refresh_tokens;
