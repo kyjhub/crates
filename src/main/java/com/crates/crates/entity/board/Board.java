@@ -37,9 +37,9 @@ public class Board {
     /**
      * 이 보드가 귀속되는 사용자.
      *
-     * <p>USER_CUSTOM일 때만 값이 있다. AI_RECOMMEND와 PRE_MADE는 소유자가 없는 전역 공용 보드라
+     * <p>USER_CUSTOM일 때만 값이 있다. AI_RECOMMEND는 소유자가 없는 전역 공용 보드라
      * null이며, 그래서 한 사용자가 그 보드를 고쳐도 다른 사용자에게 영향이 가지 않도록
-     * 수정이 아니라 복제로 처리한다. 이 규칙은 import.sql의 ck_board_owner가 DB에서 강제한다.</p>
+     * 수정이 아니라 복제로 처리한다. 이 규칙은 ck_board_owner(V3__BoardSchema)가 DB에서 강제한다.</p>
      */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id")

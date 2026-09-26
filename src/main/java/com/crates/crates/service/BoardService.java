@@ -93,11 +93,11 @@ public class BoardService {
      * <p>원본의 소유 상태에 따라 두 갈래다.</p>
      * <ul>
      *   <li>내 USER_CUSTOM 보드 → <b>그 자리에서 수정</b></li>
-     *   <li>그 밖의 보드(AI_RECOMMEND, PRE_MADE, 남의 공개 보드) → <b>복제</b>.
+     *   <li>그 밖의 보드(AI_RECOMMEND, 남의 공개 보드) → <b>복제</b>.
      *       원본은 건드리지 않고 내 USER_CUSTOM 보드를 새로 만든다.</li>
      * </ul>
      *
-     * <p>복제하는 이유: AI_RECOMMEND와 PRE_MADE는 소유자가 없는 전역 공용 보드다. 한 사람이
+     * <p>복제하는 이유: AI_RECOMMEND는 소유자가 없는 전역 공용 보드다. 한 사람이
      * 고치면 그 보드를 좋아요한 다른 모든 사용자의 화면이 함께 바뀐다. 제목을 바꾸든 콘텐츠를
      * 바꾸든 순서만 바꾸든 판단 기준은 같다 — 원본에 소유자가 있는가.</p>
      *
@@ -473,8 +473,8 @@ public class BoardService {
      * 같은 콘텐츠 구성의 보드 중 목록에 남길 하나를 고른다.
      *
      * <ol>
-     *   <li>타입 우선순위 — USER_CUSTOM &gt; AI_RECOMMEND &gt; PRE_MADE.
-     *       사용자 창작물이 알고리즘·운영자 보드보다 앞선다.</li>
+     *   <li>타입 우선순위 — USER_CUSTOM &gt; AI_RECOMMEND.
+     *       사용자 창작물이 알고리즘 보드보다 앞선다.</li>
      *   <li>같은 타입이면 <b>좋아요가 많은 쪽</b>. 인기 보드 목록에서 적게 받은 쪽을 남길 이유가 없다.</li>
      *   <li>좋아요까지 같으면 먼저 만들어진 쪽(id가 작은 쪽).</li>
      * </ol>
@@ -505,14 +505,13 @@ public class BoardService {
         return board.getLikeCount() == null ? 0L : board.getLikeCount();
     }
 
-    // 값이 작을수록 우선. USER_CUSTOM > AI_RECOMMEND > PRE_MADE
+    // 값이 작을수록 우선. USER_CUSTOM > AI_RECOMMEND
     private static int dedupePriority(BoardType boardType)
     {
         return switch (boardType)
         {
             case USER_CUSTOM -> 0;
             case AI_RECOMMEND -> 1;
-            case PRE_MADE -> 2;
         };
     }
 

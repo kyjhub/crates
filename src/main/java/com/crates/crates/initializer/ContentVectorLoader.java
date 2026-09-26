@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
 /**
  * AI 서버가 만든 콘텐츠 벡터 CSV를 Qdrant content_vector 컬렉션에 적재한다.
  *
- * <p>CSV의 id는 원본 데이터셋의 id라서, V1~V3가 content.source_key에 남긴 값으로 content.id를 찾아
+ * <p>CSV의 id는 원본 데이터셋의 id라서, V5~V7(시딩)이 content.source_key에 남긴 값으로 content.id를 찾아
  * point id로 쓴다. 이 짝이 RDB에 남아 있으므로 Qdrant가 비워져도(볼륨 없음) 재기동만 하면
  * CSV에서 다시 적재된다 — RDB를 다시 시딩할 필요가 없다.</p>
  *
@@ -90,7 +90,7 @@ public class ContentVectorLoader implements ApplicationRunner {
 
         long points = contentVectorService.countPoints();
         if (points != contentCount) {
-            // V1~V3가 벡터 있는 콘텐츠만 넣으므로 둘은 같아야 한다. 다르면 시딩과 적재가 다른 파일을 본 것이다.
+            // V5~V7(시딩)이 벡터 있는 콘텐츠만 넣으므로 둘은 같아야 한다. 다르면 시딩과 적재가 다른 파일을 본 것이다.
             log.warn("content 수와 point 수가 다릅니다. 벡터 없는 콘텐츠는 추천에 나오지 않습니다. "
                     + "contentCount={}, points={}", contentCount, points);
         }

@@ -17,7 +17,7 @@ import java.util.List;
 /**
  * 도메인별 콘텐츠 벡터 CSV의 위치를 아는 유일한 곳.
  *
- * <p>RDB 시딩(V1~V3)과 Qdrant 적재(ContentVectorLoader)가 같은 파일을 봐야 한다.
+ * <p>RDB 시딩(V5~V7)과 Qdrant 적재(ContentVectorLoader)가 같은 파일을 봐야 한다.
  * 시딩은 "벡터가 있는 콘텐츠만 넣는다"를 이 파일의 id로 판단하고, 적재는 같은 파일의 벡터를
  * 넣는다. 두 쪽이 다른 파일을 보면 벡터 없는 콘텐츠가 생기거나 적재할 곳 없는 벡터가 남는다.</p>
  *
@@ -27,7 +27,7 @@ import java.util.List;
 @Component
 public class ContentVectorFiles {
 
-    /** 적재 순서. V1~V3의 시딩 순서와 같게 두면 content.id 오름차순으로 적재된다. */
+    /** 적재 순서. V5~V7의 시딩 순서와 같게 두면 content.id 오름차순으로 적재된다. */
     public static final List<String> DTYPES = List.of("BOOK", "MOVIE", "MUSIC");
 
     private final ResourceLoader resourceLoader;

@@ -14,9 +14,9 @@
 --   :likes   계정당 좋아요 수 (boards 이하여야 한다)
 --   :stride  보드 안에서 콘텐츠를 얼마나 벌려 담을지 (seed.sh가 계산해 넘긴다)
 --
--- 전제: loadtest_seed 계정이 API 회원가입으로 미리 만들어져 있어야 한다. 비밀번호 해시와
---       취향 벡터를 그 계정에서 복사하기 때문이다(BCrypt 해시를 SQL로 만들 수 없다).
---       seed.sh가 그 부분을 처리한다.
+-- 전제: loadtest_seed 계정과 그 취향 벡터가 미리 있어야 한다. 비밀번호 해시와 취향 벡터를
+--       그 계정에서 복사하기 때문이다. seed.sh가 계정은 SQL(pgcrypto)로, 취향 벡터는 가입 직후
+--       콘텐츠 선택 API로 만든다(콘텐츠 벡터가 Qdrant에 있어 SQL로는 평균을 낼 수 없다).
 
 \set ON_ERROR_STOP on
 BEGIN;
@@ -32,12 +32,15 @@ SELECT 'loadtest_u' || g,
 FROM generate_series(0, :users - 1) g
 ON CONFLICT DO NOTHING;
 
--- 취향 벡터가 없으면 추천 조회가 BusinessException으로 죽는다. 가입 시 만들어지는 행을
--- 여기서 대신 만든다. 값은 기준 계정 것을 복사한다 — 첫 좋아요에 어차피 덮어쓰인다.
-INSERT INTO user_vector (user_id, user_vector, updated_at)
-SELECT u.id, (SELECT user_vector FROM user_vector uv
-              JOIN users s ON s.id = uv.user_id WHERE s.login_id = 'loadtest_seed'), now()
-FROM users u WHERE u.login_id LIKE 'loadtest_u%'
+-- 취향 벡터가 없으면 추천 조회가 BusinessException으로 죽는다. 가입 직후 콘텐츠를 고를 때
+-- 만들어지는 행을 여기서 대신 만든다. 벡터와 고른 콘텐츠 id를 기준 계정 것으로 채운다 —
+-- 좋아요 재계산이 이 id를 다시 읽으므로 벡터만 복사하면 첫 좋아요부터 계산이 어긋난다.
+INSERT INTO user_vector (user_id, user_vector, initial_content_ids, updated_at)
+SELECT u.id, s.user_vector, s.initial_content_ids, now()
+FROM users u
+CROSS JOIN (SELECT uv.user_vector, uv.initial_content_ids FROM user_vector uv
+            JOIN users b ON b.id = uv.user_id WHERE b.login_id = 'loadtest_seed') s
+WHERE u.login_id LIKE 'loadtest_u%'
 ON CONFLICT (user_id) DO NOTHING;
 
 -- ── 보드 ────────────────────────────────────────────────────

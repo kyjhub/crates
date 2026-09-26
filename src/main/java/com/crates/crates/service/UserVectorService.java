@@ -3,12 +3,11 @@ package com.crates.crates.service;
 import com.crates.crates.DTO.BoardContentIdDto;
 import com.crates.crates.DTO.LikedBoardDto;
 import com.crates.crates.Global.exception.BusinessException;
-import com.crates.crates.ai.DeterministicVectorFactory;
-import com.crates.crates.entity.user.User;
 import com.crates.crates.entity.user.UserVector;
 import com.crates.crates.enumData.Rating;
 import com.crates.crates.repository.BoardFeedbackRepository;
 import com.crates.crates.repository.BoardItemRepository;
+import com.crates.crates.repository.UserRepository;
 import com.crates.crates.repository.UserVectorRepository;
 import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
@@ -16,7 +15,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -32,14 +30,18 @@ import java.util.stream.Collectors;
 /**
  * 사용자 취향 벡터.
  *
- * <p>좋아요가 바뀌면 좋아요한 보드들의 콘텐츠 벡터에서 <b>매번 다시 계산</b>한다. 누적 갱신(증분)을 쓰지 않는
- * 이유는 좋아요 취소 때문이다. 증분 방식에서는 취소된 항의 기여를 되돌리는 역연산이 필요한데,
- * float32에서 더하고 빼기를 반복하면 오차가 쌓이고 마지막 좋아요를 취소하면 0으로 나누게 된다.
+ * <p><b>시작점</b> — 가입 직후 사용자가 콘텐츠를 1~10개 고르면 그 평균이 취향 벡터가 된다
+ * ({@link #initialize}). 고른 콘텐츠 id도 함께 저장한다. 고르기 전에는 벡터가 없고, 추천도 받을 수 없다.</p>
+ *
+ * <p><b>좋아요</b> — 좋아요가 바뀌면 좋아요한 보드들과 가입 때 고른 콘텐츠로 <b>매번 처음부터 다시 계산</b>한다
+ * ({@link #recalculateFor}). 재료가 모두 DB(좋아요, 고른 id)와 Qdrant(콘텐츠 벡터)에 있어서 저장된 벡터는
+ * 언제든 다시 만들 수 있는 값이다. 누적 갱신(증분)을 쓰지 않는 이유는 좋아요 취소 때문이다. 증분 방식에서는
+ * 취소된 항의 기여를 되돌리는 역연산이 필요한데, float32에서 더하고 빼기를 반복하면 오차가 쌓인다.
  * 재계산은 그 항을 빼고 다시 평균 내면 끝이라 취소가 특별한 경우가 아니게 된다.</p>
  *
- * <p>"첫 좋아요인지" 판별하는 로직도 필요 없다. 초기 랜덤 벡터는 애초에 평균에 들어가지 않고,
- * 좋아요 집합이 비었을 때만 쓰인다. 좋아요가 없는 사용자는 추천 조회 시 시작 벡터를
- * 하루에 한 번 갱신한다.</p>
+ * <p>좋아요가 0개가 되면 가입 때 고른 콘텐츠만으로 다시 계산한다. 콘텐츠 벡터가 그대로면 가입 직후와 같은 값이다.
+ * 가입 벡터(평균값) 자체를 저장하지 않는 이유는 콘텐츠 벡터가 새 모델로 바뀌었을 때 옛 모델 값이 남아
+ * 좋아요 쪽과 섞이지 않게 하기 위해서다.</p>
  */
 @Slf4j
 @Service
@@ -50,13 +52,12 @@ public class UserVectorService {
     /** 이보다 크기가 작으면 방향이 없다고 보고 정규화를 건너뛴다. */
     private static final double NORMALIZE_EPSILON = 1e-6;
 
-    /**
-     * 시작 벡터 seed에서 사용자 id와 날짜를 갈라 담는 자리수.
-     * epochDay보다 커야 두 값이 섞이지 않는다. 100만이면 서기 4707년까지 안전하다.
-     */
-    private static final long EPOCH_DAY_SLOT = 1_000_000L;
+    /** 가입 때 고를 수 있는 콘텐츠 수. 요청 DTO도 같은 범위를 검증한다. */
+    public static final int MIN_INITIAL_CONTENTS = 1;
+    public static final int MAX_INITIAL_CONTENTS = 10;
 
     private final UserVectorRepository userVectorRepository;
+    private final UserRepository userRepository;
     private final BoardFeedbackRepository boardFeedbackRepository;
     private final BoardItemRepository boardItemRepository;
     private final ContentVectorService contentVectorService;
@@ -72,92 +73,90 @@ public class UserVectorService {
     @Value("${ai.user-vector.decay-alpha}")
     private double decayAlpha;
 
-    /** 시작 벡터 seed. 사용자 id와 날짜를 함께 섞어, 같은 사용자·같은 날에는 항상 같은 벡터가 나온다. */
-    @Value("${ai.user-vector.initial-seed}")
-    private long initialSeed;
-
+    /** 추천에 쓸 벡터. 좋아요가 반영된 현재 값이다. */
     public float[] getVector(Long userId)
     {
         return userVectorRepository.findById(userId)
                 .map(UserVector::getUserVector)
-                .orElseThrow(() -> new BusinessException("사용자 벡터가 존재하지 않습니다. userId: " + userId));
+                .orElseThrow(() -> new BusinessException("취향 콘텐츠를 먼저 선택해주세요."));
     }
 
-    /**
-     * 추천에 쓸 벡터. 좋아요가 없는 사용자의 시작 벡터는 하루에 한 번 새로 만든다.
-     * 매일 같은 추천 보드를 보지 않도록 하되, 좋아요 기반 취향 벡터는 그대로 유지한다.
-     */
-    @Transactional
-    public float[] resolveVector(Long userId)
+    /** 가입 때 콘텐츠를 골랐는지. 고르기 전에는 행이 없다. */
+    public boolean hasVector(Long userId)
     {
-        UserVector stored = userVectorRepository.findById(userId)
-                .orElseThrow(() -> new BusinessException("사용자 벡터가 존재하지 않습니다. userId: " + userId));
-
-        // 날짜 비교, seed, 저장 시각이 자정을 사이에 두고 서로 다른 날을 가리키지 않도록 한 번만 읽는다.
-        LocalDateTime now = LocalDateTime.now();
-        LocalDate today = now.toLocalDate();
-        if (stored.getUpdatedAt().toLocalDate().equals(today))
-        {
-            return stored.getUserVector();
-        }
-        if (boardFeedbackRepository.existsByUserIdAndRating(userId, Rating.LIKE))
-        {
-            return stored.getUserVector();
-        }
-
-        float[] fresh = initialVectorOf(userId, today);
-
-        // 이 메서드에서 쓰기가 일어나는 지점은 여기뿐이다.
-        //
-        // 읽기 전용 트랜잭션에 합류한 상태라면(예: 호출부에 @Transactional(readOnly = true)가 붙으면)
-        // Hibernate가 FlushMode.MANUAL이라 더티 체킹이 플러시되지 않는다. 예외도 없고 요청도
-        // 성공하는데 벡터만 그대로다. 이 프로젝트가 Qdrant 버전 불일치와 gRPC 한도에서 두 번 겪은
-        // "조용히 잘못된 값이 흐르는" 유형이라, 침묵하느니 여기서 멈춘다.
-        //
-        // 위의 두 조기 반환은 쓰기가 없어 읽기 전용이어도 정상이므로 검사하지 않는다.
-        // 지킬 것이 있는 지점에서만 단언한다.
-        if (TransactionSynchronizationManager.isCurrentTransactionReadOnly())
-        {
-            throw new IllegalStateException(
-                    "시작 벡터를 저장해야 하는데 현재 트랜잭션이 읽기 전용입니다. "
-                            + "호출 경로에 @Transactional(readOnly = true)가 있는지 확인하세요. userId: " + userId);
-        }
-
-        stored.updateVector(fresh, now);
-        return fresh;
+        return userVectorRepository.existsById(userId);
     }
 
     /**
-     * 가입 시점에 L2 정규화된 랜덤 벡터를 넣어둔다.
+     * 가입 때 고른 콘텐츠의 평균으로 취향 벡터를 만들고, 고른 id를 함께 저장한다. 사용자마다 한 번만 할 수 있다.
      *
-     * <p>0 벡터를 쓸 수 없다. Cosine 거리는 0 벡터에 대해 정의되지 않아(norm이 0이라 정규화 불가)
-     * 추천 자체가 불가능해진다. 랜덤 벡터는 어떤 콘텐츠와도 특별히 가깝지 않아 사실상 임의 추천이
-     * 되지만, 적어도 화면이 채워지고 첫 좋아요를 받는 순간 실제 취향으로 대체된다.</p>
+     * <p>콘텐츠마다 벡터를 L2 정규화된 채로 더해 평균 낸 뒤 다시 정규화한다. 보드 하나의 대표 벡터를
+     * 만드는 방식({@link #averageOf})과 같아서, 고른 콘텐츠는 "사용자가 직접 만든 보드 한 장"처럼 취급된다.</p>
+     *
+     * <p>고른 콘텐츠 중 하나라도 벡터가 없으면 거절한다. 일부만으로 평균을 내면 사용자는 고른 대로
+     * 반영됐다고 믿는데 실제 벡터는 다르게 만들어진다. 시딩이 벡터 있는 콘텐츠만 넣으므로 정상이라면
+     * 존재하지 않는 id를 보냈을 때만 여기에 걸린다.</p>
      */
     @Transactional
-    public void initializeFor(User user)
+    public void initialize(Long userId, List<Long> contentIds)
     {
+        if (userVectorRepository.existsById(userId))
+        {
+            throw new BusinessException("이미 취향 콘텐츠를 선택했습니다.");
+        }
+
+        Set<Long> distinctIds = new LinkedHashSet<>(contentIds);
+        if (distinctIds.size() != contentIds.size())
+        {
+            throw new BusinessException("같은 콘텐츠를 두 번 고를 수 없습니다.");
+        }
+        if (distinctIds.size() < MIN_INITIAL_CONTENTS || distinctIds.size() > MAX_INITIAL_CONTENTS)
+        {
+            throw new BusinessException("콘텐츠는 " + MIN_INITIAL_CONTENTS + "개 이상 "
+                    + MAX_INITIAL_CONTENTS + "개 이하로 골라주세요.");
+        }
+
+        Map<Long, float[]> vectorByContentId = contentVectorService.findVectors(distinctIds);
+        if (vectorByContentId.size() != distinctIds.size())
+        {
+            throw new BusinessException("선택할 수 없는 콘텐츠가 포함돼 있습니다.");
+        }
+
+        List<Long> initialContentIds = List.copyOf(distinctIds);
+        float[] initialVector = averageOf(initialContentIds, vectorByContentId);
+        if (initialVector == null)
+        {
+            // 벡터는 받았는데 차원이 전부 어긋났다. averageOf가 원인을 로그로 남긴다.
+            throw new IllegalStateException("콘텐츠 벡터로 취향 벡터를 만들지 못했습니다. userId: " + userId);
+        }
+
         userVectorRepository.save(UserVector.builder()
-                .user(user)
-                .userVector(initialVectorOf(user.getId(), LocalDate.now()))
+                .user(userRepository.getReferenceById(userId))
+                .userVector(initialVector)
+                .initialContentIds(initialContentIds)
                 .updatedAt(LocalDateTime.now())
                 .build());
     }
 
     /**
-     * 좋아요 집합 전체로부터 취향 벡터를 다시 만든다.
+     * 좋아요 집합 전체와 가입 때 고른 콘텐츠로 취향 벡터를 다시 만든다. 좋아요가 0개면 고른 콘텐츠만으로 만든다.
      *
      * <p>가중치는 <b>좋아요한 날짜의 최신순 순위</b>로 정한다. 같은 날 누른 것은 같은 가중치를
      * 받으므로, 한 세션에 여러 개를 몰아 눌러도 앞의 것이 밀려나지 않는다. 실제 달력 거리를 쓰지
      * 않는 이유는, 오랜만에 돌아온 사용자의 과거 취향이 통째로 사라지지 않게 하기 위해서다.</p>
      *
+     * <p>고른 콘텐츠의 평균(가입 벡터)은 <b>가장 오래된 좋아요 날짜 다음 순위</b>의 한 표로 들어간다. 가입 때 고른 것이
+     * 어떤 좋아요보다도 먼저 한 선택이기 때문이다. 좋아요 이력이 쌓일수록 영향이 자연히 줄어든다
+     * (좋아요한 날이 3일이면 (1-α)^3, 10일이면 (1-α)^10).</p>
+     *
      * <pre>
-     *   V = normalize( Σ wᵢ · normalize(보드ᵢ의 콘텐츠 평균) )
+     *   V = normalize( Σ wᵢ · normalize(보드ᵢ의 콘텐츠 평균) + w₀ · normalize(고른 콘텐츠 평균) )
      *   wᵢ = (1-α)^(그 보드를 좋아요한 날짜의 최신순 순위)
+     *   w₀ = (1-α)^(좋아요한 날짜 수)
      * </pre>
      *
      * <p>정규화가 두 번 나오는데 역할이 다르다. <b>안쪽</b>은 보드 하나가 한 표가 되게 해서
-     * 가중치를 날짜 순위만으로 통제한다(boardVectorOf 참고). <b>바깥쪽</b>은 순위에 영향이 없고
+     * 가중치를 날짜 순위만으로 통제한다(averageOf 참고). <b>바깥쪽</b>은 순위에 영향이 없고
      * (Qdrant가 질의 벡터를 정규화한다) 저장값의 크기를 1로 고정해 로그와 모니터링에서
      * 이상값을 알아보기 쉽게 하려는 것이다.</p>
      */
@@ -173,20 +172,21 @@ public class UserVectorService {
         UserVector stored = userVectorRepository.findById(userId).orElse(null);
         if (stored == null)
         {
-            // 가입 시 만들어지므로 정상 흐름에서는 오지 않는다. 없으면 계산할 근거도 없다.
+            // 가입 때 콘텐츠를 골라야 행이 생긴다. 고르기 전에는 좋아요를 누를 화면에 갈 수 없어
+            // 정상 흐름에서는 오지 않는다. 없으면 계산할 근거도 없다.
             log.warn("취향 벡터 행이 없어 재계산을 건너뜁니다. userId: {}", userId);
             metrics.recordRecalculation(sample, UserVectorMetrics.Result.SKIPPED);
             return;
         }
 
+        List<Long> initialContentIds = stored.getInitialContentIds();
         float[] recalculated = liked.isEmpty()
-                // 좋아요를 전부 취소하면 시작 벡터로 되돌린다. 날짜가 섞여 있어 가입 시점과 같지 않다.
-                ? initialVectorOf(userId, LocalDate.now())
-                : weightedAverageOf(liked);
-
+                // 좋아요를 전부 취소하면 가입 때 고른 콘텐츠만으로 다시 만든다.
+                ? averageOf(initialContentIds, contentVectorService.findVectors(initialContentIds))
+                : weightedAverageOf(liked, initialContentIds);
         if (recalculated == null)
         {
-            log.warn("좋아요한 보드의 콘텐츠 벡터를 찾지 못해 취향 벡터를 유지합니다. userId: {}", userId);
+            log.warn("콘텐츠 벡터를 찾지 못해 취향 벡터를 유지합니다. userId: {}, 좋아요 {}건", userId, liked.size());
             metrics.recordRecalculation(sample, UserVectorMetrics.Result.UNCHANGED);
             return;
         }
@@ -196,12 +196,17 @@ public class UserVectorService {
     }
 
     /**
-     * 좋아요한 보드들의 가중 평균. 쓸 수 있는 벡터가 하나도 없으면 null.
+     * 좋아요한 보드들과 가입 때 고른 콘텐츠의 가중 평균. 좋아요한 보드 중 쓸 수 있는 벡터가 하나도 없으면 null.
      *
      * <p>보드 평균을 <b>정규화한 뒤</b> 가중치를 곱한다. 순서가 중요하다. 정규화를 나중에 하면
-     * {@code normalize(w·b) == normalize(b)}가 되어 가중치가 통째로 사라진다.</p>
+     * {@code normalize(w·b) == normalize(b)}가 되어 가중치가 통째로 사라진다. 고른 콘텐츠도 같은 방식으로
+     * 한 묶음의 대표 벡터를 만든 뒤 가중치를 곱한다.</p>
+     *
+     * <p>보드가 하나도 계산되지 않으면 고른 콘텐츠만으로 결과를 내지 않고 null을 돌려준다. 그 상황은
+     * Qdrant 조회가 깨졌다는 뜻일 가능성이 커서, 고른 콘텐츠만으로 덮어쓰면 좋아요 이력이 조용히 사라진다.
+     * 호출부는 기존 값을 유지한다.</p>
      */
-    private float[] weightedAverageOf(List<LikedBoardDto> liked)
+    private float[] weightedAverageOf(List<LikedBoardDto> liked, List<Long> initialContentIds)
     {
         Map<Long, Double> weightByBoardId = weightByBoardId(liked);
 
@@ -211,9 +216,11 @@ public class UserVectorService {
         // 보드마다 조회하지 않고 콘텐츠 id를 전부 모아 한 번에 넘긴다. 왕복 횟수는 보드 수가
         // 아니라 콘텐츠 수에 비례하며, gRPC 수신 한도 때문에 1,000개마다 한 번씩 나간다
         // (QdrantPointOperations.RETRIEVE_CHUNK_SIZE). 보드 125개까지는 왕복 한 번이다.
+        // 고른 콘텐츠도 같은 조회에 싣는다. 최대 10건이라 왕복 수는 늘지 않는다.
         Set<Long> contentIds = pairs.stream()
                 .map(BoardContentIdDto::contentId)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+        contentIds.addAll(initialContentIds);
         Map<Long, float[]> vectorByContentId = contentVectorService.findVectors(contentIds);
 
         Map<Long, List<Long>> contentIdsByBoardId = pairs.stream()
@@ -227,7 +234,7 @@ public class UserVectorService {
 
         for (Map.Entry<Long, Double> entry : weightByBoardId.entrySet())
         {
-            float[] boardVector = boardVectorOf(contentIdsByBoardId.get(entry.getKey()), vectorByContentId);
+            float[] boardVector = averageOf(contentIdsByBoardId.get(entry.getKey()), vectorByContentId);
             if (boardVector == null)
             {
                 // Qdrant에 벡터가 아직 없는 콘텐츠만으로 이뤄진 보드. 평균에서 뺀다.
@@ -249,6 +256,18 @@ public class UserVectorService {
             log.error("좋아요한 보드 {}건에서 콘텐츠 {}건을 조회했으나 쓸 수 있는 벡터가 {}건입니다.",
                     weightByBoardId.size(), contentIds.size(), vectorByContentId.size());
             return null;
+        }
+
+        // 고른 콘텐츠는 가장 오래된 좋아요 날짜 다음 순위다. 고른 기록이 없는 행(빈 배열)은 좋아요만으로 계산한다.
+        float[] initialVector = averageOf(initialContentIds, vectorByContentId);
+        if (initialVector != null)
+        {
+            long likedDays = liked.stream().map(item -> item.likedAt().toLocalDate()).distinct().count();
+            double initialWeight = Math.pow(1.0 - decayAlpha, likedDays);
+            for (int index = 0; index < vectorDimension; index++)
+            {
+                accumulated[index] += (float) (initialVector[index] * initialWeight);
+            }
         }
 
         // 가중치 합으로 나누지 않는다. 어차피 정규화하므로 양수 스칼라로 나누는 것은 결과에 영향이 없다.
@@ -285,7 +304,8 @@ public class UserVectorService {
     }
 
     /**
-     * 보드 하나를 대표하는 벡터. 콘텐츠 8건의 평균을 L2 정규화한 값이다. 쓸 수 있는 콘텐츠가 없으면 null.
+     * 콘텐츠 묶음을 대표하는 벡터. 콘텐츠 벡터의 평균을 L2 정규화한 값이다. 쓸 수 있는 콘텐츠가 없으면 null.
+     * 좋아요한 보드 하나(콘텐츠 8건)와 가입 때 고른 콘텐츠(1~10건)에 같이 쓴다.
      *
      * <p>정규화하는 이유는 <b>보드 하나가 한 표가 되게</b> 하기 위해서다. 정규화하지 않으면 평균 벡터의
      * 크기가 그대로 가중치에 곱해지는데, 그 크기는 8건이 서로 얼마나 비슷한지(응집도)를 나타낸다.
@@ -295,7 +315,7 @@ public class UserVectorService {
      * <p>사용자가 하는 행동은 "보드에 좋아요"지 "콘텐츠에 좋아요"가 아니다. 세는 단위를 보드로
      * 맞춘다. (정규화하지 않으면 콘텐츠 하나하나를 한 표로 세는 것과 수학적으로 같아진다.)</p>
      */
-    private float[] boardVectorOf(List<Long> contentIds, Map<Long, float[]> vectorByContentId)
+    private float[] averageOf(List<Long> contentIds, Map<Long, float[]> vectorByContentId)
     {
         if (contentIds == null || contentIds.isEmpty())
         {
@@ -383,29 +403,5 @@ public class UserVectorService {
             result[index] = (float) (vector[index] / norm);
         }
         return result;
-    }
-
-    /**
-     * 좋아요 정보가 없을 때 쓰는 시작 벡터.
-     *
-     * <p>seed에 <b>날짜</b>를 섞는다. 사용자 id만 쓰면 가입 시점과 좋아요를 전부 취소한 시점의
-     * 벡터가 같아지고, 좋아요가 없는 사용자는 "오늘의 추천 보드"에서 매일 같은 4개를 보게 된다.
-     * 날짜가 들어가면 하루마다 다른 시작점을 받는다.</p>
-     *
-     * <p>가입 이후 날짜가 반영되는 시점은 좋아요를 전부 취소할 때({@link #recalculateFor})와,
-     * 좋아요가 없는 사용자가 추천을 조회할 때({@link #resolveVector})다.</p>
-     *
-     * <p>시각이 아니라 날짜인 것이 중요하다. 재계산은 비동기라 연타하면 여러 번 돌 수 있는데,
-     * 초 단위로 섞으면 호출마다 다른 값이 나와 "재계산은 언제 돌려도 같은 결과"라는 성질이 깨진다.
-     * 날짜 단위면 하루 안에서는 멱등하다.</p>
-     */
-    private float[] initialVectorOf(long userId, LocalDate on)
-    {
-        // (사용자, 날짜)를 자리수로 갈라 담아 서로 다른 쌍이 절대 같은 seed가 되지 않게 한다.
-        // 해시를 한 번 더 씌우지 않는 이유는 SplittableRandom이 내부에서 이미 seed를 섞기 때문이다
-        // (nextLong = mix64(seed + gamma)). seed가 1만 달라도 결과 벡터는 서로 무관하다.
-        long seed = initialSeed + userId * EPOCH_DAY_SLOT + on.toEpochDay();
-
-        return DeterministicVectorFactory.create(seed, vectorDimension);
     }
 }
