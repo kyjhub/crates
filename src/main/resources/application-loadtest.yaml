@@ -1,0 +1,24 @@
+# 부하 측정 프로파일. docker-compose.loadtest.yml이 켠다(SPRING_PROFILES_ACTIVE=loadtest).
+#
+# 측정 때문에 운영과 달라야 하는 것만 둔다. 여기에 무언가를 더 얹을수록 운영과 다른 앱을 재게 된다.
+# 풀 크기처럼 운영에서도 쓸 값은 application.yaml에 둔다.
+#
+# 그래서 일부러 두지 않은 것:
+#   open-in-view   운영 기본값(true) 그대로 잰다. 문제가 드러나면 그때 바꾸고 전후를 비교한다.
+#   백필 스케줄러   운영에서도 5분마다 돈다. 끄지 않고 측정에 섞이는 것을 감수한다.
+
+# 개발 편의로 켜둔 SQL 출력을 끈다. 켜 두면 요청마다 쿼리와 바인딩 값을 전부 찍어서
+# 부하가 걸리면 로그 쓰기가 응답 시간을 지배한다.
+#   show-sql      로거가 아니라 System.out으로 바로 찍는다. 로그 레벨로는 꺼지지 않아 따로 끈다.
+#   SQL, BasicBinder  application.yaml이 DEBUG/TRACE로 켜 둔 것.
+spring:
+  jpa:
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+
+logging:
+  level:
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN

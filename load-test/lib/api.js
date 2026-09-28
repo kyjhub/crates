@@ -77,7 +77,7 @@ export function likeBoard(token, boardId) {
   });
 }
 
-/** 좋아요 취소. 좋아요 이력을 0으로 되돌려야 하는 시나리오(board-growth)에서 쓴다. */
+/** 좋아요 취소. 쓰기 시나리오가 좋아요와 짝으로 보내 좋아요 이력을 원래대로 유지한다. */
 export function unlikeBoard(token, boardId) {
   return http.del(`${BASE}/api/boards/${boardId}/likes`, null, {
     ...auth(token),

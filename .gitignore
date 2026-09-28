@@ -48,3 +48,6 @@ src/main/resources/data/
 
 ### macOS ###
 .DS_Store
+
+### 부하 측정 결과 (실행마다 생기는 k6 요약과 자원 기록) ###
+load-test/results/

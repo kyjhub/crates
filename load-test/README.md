@@ -19,14 +19,28 @@ k6가 재는 건 ①뿐이다. DB 시간은 그 숫자 **안에 섞여** 있을 
 
 `k6` 설치(`brew install k6`)와 `crates_server.env`가 저장소 루트에 있을 것.
 
-**앱은 컨테이너로 띄운다.** 자원 상한(`cpus: '4'`, `memory: 3g`)이 걸려야 수치가 재현된다.
+**앱은 컨테이너로, 측정용 덧씌우기(`docker-compose.loadtest.yml`)를 얹어 띄운다.**
 
 ```bash
-docker compose --env-file crates_server.env down -v
-docker compose --env-file crates_server.env up -d --build
+docker compose --env-file crates_server.env -f docker-compose.yml -f docker-compose.loadtest.yml up -d --build
 ```
 
-기동에 4~5분 걸린다(콘텐츠 19만 건 시딩 + 이미지 업로드 + Qdrant 적재).
+덧씌우기가 하는 일:
+
+| 서비스 | CPU | 메모리 | 그 외 |
+|---|---:|---:|---|
+| backend | 4 (`BACKEND_CPUS`) | 3g | `loadtest` 프로파일 — SQL 출력만 끈다 |
+| postgres | 2 (`PG_CPUS`) | 2g | `shared_buffers=512MB`, `effective_cache_size=1536MB` |
+| qdrant | 1 (`QDRANT_CPUS`) | 1.5g | |
+
+상한은 "클라우드에서 자원을 얼마나 써야 하나"를 정하려고 건다. 코어 수 실험은 파일을 고치지 않고
+`BACKEND_CPUS=2 docker compose ... up -d backend`로 한다. redis·minio는 측정할 API가 거치지 않아 두지 않는다.
+커넥션 풀은 측정용 값이 아니라 운영 값이라 `application.yaml`에 있다(10개).
+
+> **qdrant는 볼륨이 없다.** 덧씌우기를 처음 적용하거나 qdrant 상한을 바꾸면 컨테이너가 재생성되어 벡터가 사라지고,
+> backend가 뜰 때 다시 적재한다. postgres는 이름 있는 볼륨이라 시딩한 데이터가 남는다.
+
+처음부터 띄울 때(`down -v` 후) 기동에 4~5분 걸린다(콘텐츠 18만 건 시딩 + 이미지 업로드 + Qdrant 적재).
 `docker compose ps`로 `backend_server`가 뜬 것을 확인하고 시작한다.
 
 > `--build`를 붙이는 이유: `postgres/init.sql`(pg_stat_statements 생성)이 이미지에 구워져 있어,
@@ -38,7 +52,7 @@ docker compose --env-file crates_server.env up -d --build
 ## 데이터 준비와 부하 생성은 다른 도구다
 
 ```bash
-./load-test/seed.sh [계정수] [보드수] [계정당좋아요]
+./load-test/seed.sh [계정수] [AI보드수] [계정당좋아요] [사용자보드수]
 ```
 
 `seed.sh`가 **측정하려는 상태**를 만들고, k6는 **그 상태에 부하**를 건다. k6는 계정도 보드도
@@ -96,34 +110,30 @@ docker compose --env-file crates_server.env up -d --build
 ## 실행
 
 ```bash
-./load-test/run-measure.sh <시나리오> [측정횟수]
+./load-test/prepare.sh                                        # 한 번만: 정리 → 시딩 → 벡터 재계산 → VACUUM ANALYZE
+./load-test/run-measure.sh <시나리오> [측정횟수] [--vacuum]
 ```
 
-스크립트가 **준비 확인 → 초기화·재시딩 → 워밍업 1회(버림) → 측정 N회 → 중앙값**을 한다.
-매 측정 전에 `cleanup.sql` + `seed.sh`로 출발 상태를 똑같이 되돌린다.
+`prepare.sh`는 레포지토리 측정과 같은 데이터(`seed.sh 1000 10000 10000 10000`, 좋아요 1,000만 건)를
+만든다. 몇 분 걸리므로 측정마다 돌리지 않는다. backend가 8080에 떠 있어야 한다.
 
-| 시나리오 | 바뀌는 변수 | 쓸 곳 |
-|---|---|---|
-| `like-new-board` | board 행 수 **와** 좋아요 이력 (둘 다) | 코드 변경 전후 정상 상태 처리율 비교 |
-| `board-growth` | **board 행 수만** (좋아요 후 즉시 취소) | 보드가 많아질 때 조회·INSERT 경로 |
-| `like-history` | **좋아요 이력만** (미리 만든 보드 풀에 좋아요) | 재계산이 O(이력)인 것의 영향 |
+시딩 뒤에 **전원의 취향 벡터를 각자의 좋아요로 다시 계산한다**(`lib/recalc-vectors.sh`, 약 30분).
+`seed.sh`는 기준 계정의 벡터를 전원에게 복사하는데, 그대로 재면 두 가지가 틀어진다.
+1,000명이 같은 벡터로 추천을 검색해 결과와 캐시가 한곳에 몰리고(실제보다 좋게 나온다),
+쓰기 측정의 좋아요가 재계산을 일으켜 벡터를 바꾸므로 측정 순서에 따라 결과가 달라진다.
+앱의 재계산을 그대로 쓰려고 계정마다 좋아요 → 취소를 보내고 각 재계산이 끝나기를 기다린다.
+끝나면 좋아요와 `like_count`는 그대로이고 벡터만 맞춰진다. 레포지토리 측정만 할 때는 `SKIP_RECALC=1`로 건너뛴다.
 
-```bash
-# 기본: 코드 변경 전후 비교
-USERS=20 ITERATIONS=600 ./load-test/run-measure.sh like-new-board 3
+`run-measure.sh`는 **준비 확인 → 초기화 → 워밍업 1회(버림) → 측정 N회 → 중앙값**을 한다.
+초기화는 `pg_stat_statements_reset()`뿐이고(`--vacuum`이면 `VACUUM ANALYZE`도), **데이터는 지우지 않는다.**
+읽기 시나리오는 상태를 바꾸지 않고, 쓰기 시나리오는 좋아요→취소를 짝으로 보내 상태를 유지한다.
 
-# board가 누적되는 효과 (--keep으로 매 실행 초기화를 건너뛴다)
-USERS=20 ITERATIONS=600 ./load-test/run-measure.sh board-growth 5 --keep
+회차마다 `load-test/results/<시나리오>-<시각>/`에 k6 요약(`runN.json`)과 부하 중 자원 기록(`runN.csv`)이 남는다.
+자원 기록은 `lib/sampler.sh`가 2초마다 backend·postgres·qdrant·k6의 CPU와 커넥션 풀 active/pending을 적은 것이고,
+표에는 회차별 최대값이 함께 나온다. 처리율이 더 오르지 않을 때 어느 자원이 먼저 찼는지를 여기서 판정한다.
+**k6 CPU가 높으면 서버가 아니라 부하 생성기의 한계다** — k6는 같은 맥에서 돈다.
 
-# 이력이 쌓일 때 재계산 비용 — 실행 후 앱 지표를 함께 볼 것
-USERS=10 ITERATIONS=600 POOL=500 SEED="10 600 0" ./load-test/run-measure.sh like-history 3
-
-# 이미 이력 150건인 상태에서 시작
-SEED="10 600 150" ./load-test/run-measure.sh like-history 3
-```
-
-환경변수: `USERS`, `ITERATIONS`, `POOL`(like-history), `SEED`("계정수 보드수 계정당좋아요"),
-`BASE_URL`, `MAX_CONTENT_ID`(기본 183136).
+환경변수: `BASE_URL`, `MAX_CONTENT_ID`(기본 183136).
 
 ### 왜 이런 모양인가
 
@@ -138,9 +148,6 @@ SEED="10 600 150" ./load-test/run-measure.sh like-history 3
 
 **반복과 중앙값** — 정상 상태에서도 실행 간 ±6%가 흔들린다. 1회 측정으로는 아무것도 말할 수
 없다. 스크립트가 퍼짐을 함께 출력하니, **두 설정의 차이가 퍼짐보다 작으면 유의하지 않다.**
-
-**변수 분리** — `like-new-board`는 board와 이력을 동시에 늘린다. "규모가 커지면 무엇이
-느려지나"를 이걸로 물으면 답할 수 없다. `board-growth` / `like-history`를 쓸 것.
 
 **처리율은 `iterations.rate`** — `http_reqs`에는 `setup()`의 회원가입·로그인이 섞여 약 10%
 부풀려진다(실측 134.6 vs 122.4).

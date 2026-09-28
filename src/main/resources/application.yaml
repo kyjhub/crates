@@ -5,6 +5,18 @@ spring:
     username: ${POSTGRESQL_USERNAME}
     password: ${POSTGRESQL_PASSWORD}
     driver-class-name: org.postgresql.Driver
+    # 커넥션 풀. 앱이 DB와 동시에 열어두는 연결 수이고, DB에 동시에 쿼리를 던질 수 있는 상한이다.
+    # 다 빌려 가면 다음 요청은 풀 앞에서 기다린다(hikaricp.connections.pending, acquire p95로 보인다).
+    #
+    # 기본값과 같은 10이지만 명시한다. 부하 측정 결과가 "풀 10"에서 나온 것임을 여기서 확인할 수 있고,
+    # 바꿀 때 고칠 곳이 분명해진다. 크게 잡는다고 빨라지지 않는다 — DB가 실제로 동시에 처리하는 쿼리는
+    # 코어 수 정도라 넘치는 연결은 문맥 전환과 락 경합만 늘린다(HikariCP 권장 출발점: 코어×2 + 디스크 수).
+    #
+    # minimum-idle을 같은 값으로 둬서 고정 크기로 쓴다. 부하가 몰리는 순간 연결을 새로 맺느라
+    # 지연이 튀지 않게 하는 HikariCP 권장 방식이다.
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 10
   jpa:
     # 스키마는 Flyway(V1~V4, V8)가 갖는다. Hibernate는 테이블을 만들지도 지우지도 않는다.
     #
