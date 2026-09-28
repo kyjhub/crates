@@ -7,6 +7,7 @@ import com.crates.crates.entity.user.UserVector;
 import com.crates.crates.enumData.Rating;
 import com.crates.crates.repository.BoardFeedbackRepository;
 import com.crates.crates.repository.BoardItemRepository;
+import com.crates.crates.repository.OnboardingContentRepository;
 import com.crates.crates.repository.UserRepository;
 import com.crates.crates.repository.UserVectorRepository;
 import io.micrometer.core.instrument.Timer;
@@ -61,6 +62,7 @@ public class UserVectorService {
     private final BoardFeedbackRepository boardFeedbackRepository;
     private final BoardItemRepository boardItemRepository;
     private final ContentVectorService contentVectorService;
+    private final OnboardingContentRepository onboardingContentRepository;
     private final UserVectorMetrics metrics;
 
     @Value("${ai.server.embedding-dimension}")
@@ -93,9 +95,11 @@ public class UserVectorService {
      * <p>콘텐츠마다 벡터를 L2 정규화된 채로 더해 평균 낸 뒤 다시 정규화한다. 보드 하나의 대표 벡터를
      * 만드는 방식({@link #averageOf})과 같아서, 고른 콘텐츠는 "사용자가 직접 만든 보드 한 장"처럼 취급된다.</p>
      *
+     * <p>가입 화면이 보여준 후보 목록(onboarding_content, 종류별 인기순 200개) 밖의 콘텐츠는 받지 않는다.</p>
+     *
      * <p>고른 콘텐츠 중 하나라도 벡터가 없으면 거절한다. 일부만으로 평균을 내면 사용자는 고른 대로
-     * 반영됐다고 믿는데 실제 벡터는 다르게 만들어진다. 시딩이 벡터 있는 콘텐츠만 넣으므로 정상이라면
-     * 존재하지 않는 id를 보냈을 때만 여기에 걸린다.</p>
+     * 반영됐다고 믿는데 실제 벡터는 다르게 만들어진다. 후보는 벡터가 있는 콘텐츠로만 채우므로 정상이라면
+     * Qdrant가 비어 있을 때(재적재 중)만 여기에 걸린다.</p>
      */
     @Transactional
     public void initialize(Long userId, List<Long> contentIds)
@@ -114,6 +118,13 @@ public class UserVectorService {
         {
             throw new BusinessException("콘텐츠는 " + MIN_INITIAL_CONTENTS + "개 이상 "
                     + MAX_INITIAL_CONTENTS + "개 이하로 골라주세요.");
+        }
+
+        // 가입 화면이 보여준 후보 목록(onboarding_content) 안에서만 고를 수 있다. 목록 밖의 id는 화면을
+        // 거치지 않은 요청이므로 받지 않는다. Qdrant 왕복 전에 DB에서 먼저 거른다.
+        if (onboardingContentRepository.countByContentIdIn(distinctIds) != distinctIds.size())
+        {
+            throw new BusinessException("선택할 수 없는 콘텐츠가 포함돼 있습니다.");
         }
 
         Map<Long, float[]> vectorByContentId = contentVectorService.findVectors(distinctIds);

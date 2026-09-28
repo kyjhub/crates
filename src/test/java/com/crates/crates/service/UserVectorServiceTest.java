@@ -8,6 +8,7 @@ import com.crates.crates.entity.user.UserVector;
 import com.crates.crates.enumData.Rating;
 import com.crates.crates.repository.BoardFeedbackRepository;
 import com.crates.crates.repository.BoardItemRepository;
+import com.crates.crates.repository.OnboardingContentRepository;
 import com.crates.crates.repository.UserRepository;
 import com.crates.crates.repository.UserVectorRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,6 +45,7 @@ class UserVectorServiceTest {
     @Mock private BoardFeedbackRepository boardFeedbackRepository;
     @Mock private BoardItemRepository boardItemRepository;
     @Mock private ContentVectorService contentVectorService;
+    @Mock private OnboardingContentRepository onboardingContentRepository;
     @Mock private UserVectorMetrics metrics;
 
     private UserVectorService service;
@@ -52,7 +54,7 @@ class UserVectorServiceTest {
     void setUp()
     {
         service = new UserVectorService(userVectorRepository, userRepository, boardFeedbackRepository,
-                boardItemRepository, contentVectorService, metrics);
+                boardItemRepository, contentVectorService, onboardingContentRepository, metrics);
         ReflectionTestUtils.setField(service, "vectorDimension", DIMENSION);
         ReflectionTestUtils.setField(service, "decayAlpha", ALPHA);
     }
@@ -65,6 +67,7 @@ class UserVectorServiceTest {
         {
             when(userVectorRepository.existsById(USER_ID)).thenReturn(false);
             when(userRepository.getReferenceById(USER_ID)).thenReturn(mock(User.class));
+            when(onboardingContentRepository.countByContentIdIn(Set.of(1L, 2L))).thenReturn(2L);
             when(contentVectorService.findVectors(Set.of(1L, 2L)))
                     .thenReturn(Map.of(1L, axis(0), 2L, axis(1)));
 
@@ -107,10 +110,22 @@ class UserVectorServiceTest {
             verifyNoInteractions(contentVectorService);
         }
 
+        /** 가입 화면이 보여준 후보 목록 밖의 콘텐츠는 화면을 거치지 않은 요청이다. Qdrant까지 가지 않고 거절한다. */
+        @Test
+        void rejectsContentOutsideOnboardingCandidates()
+        {
+            when(onboardingContentRepository.countByContentIdIn(Set.of(1L, 999L))).thenReturn(1L);
+
+            assertThrows(BusinessException.class, () -> service.initialize(USER_ID, List.of(1L, 999L)));
+            verifyNoInteractions(contentVectorService);
+            verify(userVectorRepository, never()).save(any());
+        }
+
         /** 일부만으로 평균을 내면 사용자는 고른 대로 반영됐다고 믿는데 실제 벡터는 다르게 만들어진다. */
         @Test
         void rejectsWhenAnySelectedContentHasNoVector()
         {
+            when(onboardingContentRepository.countByContentIdIn(Set.of(1L, 999L))).thenReturn(2L);
             when(contentVectorService.findVectors(Set.of(1L, 999L))).thenReturn(Map.of(1L, axis(0)));
 
             assertThrows(BusinessException.class, () -> service.initialize(USER_ID, List.of(1L, 999L)));
