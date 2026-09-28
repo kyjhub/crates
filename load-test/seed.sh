@@ -56,14 +56,15 @@ if [ "$($PSQL1 "SELECT count(*) FROM users WHERE login_id='loadtest_seed'")" = "
 fi
 
 # 취향 벡터는 실제 가입 흐름과 같은 API로 만든다. 콘텐츠 벡터가 Qdrant에 있어 SQL로는 평균을 낼 수 없다.
-# 도메인마다 첫 콘텐츠를 하나씩 고른다(3개). 값 자체는 측정에 영향이 없고, 있기만 하면 된다.
+# 가입 화면의 후보 목록(onboarding_content)에서 종류마다 인기 1위를 하나씩 고른다(3개). 목록 밖의 콘텐츠는
+# 서버가 거절한다. 값 자체는 측정에 영향이 없고(prepare.sh가 전원을 좋아요로 다시 계산한다), 있기만 하면 된다.
 if [ "$($PSQL1 "SELECT count(*) FROM user_vector uv JOIN users u ON u.id=uv.user_id WHERE u.login_id='loadtest_seed'")" = "0" ]; then
     printf '기준 계정 취향 콘텐츠 선택(API) ... '
     token=$(curl -s -X POST http://localhost:8080/api/auth/login -H 'Content-Type: application/json' \
         -d '{"loginId":"loadtest_seed","pwd":"Loadtest!234"}' \
         | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['accessToken'])" 2>/dev/null || true)
     [ -n "$token" ] || { echo "로그인 실패 — 앱이 떠 있는지 확인하세요" >&2; exit 1; }
-    ids=$($PSQL1 "SELECT string_agg(id::text, ',' ORDER BY id) FROM (SELECT min(id) AS id FROM content GROUP BY dtype) t")
+    ids=$($PSQL1 "SELECT string_agg(content_id::text, ',') FROM (SELECT DISTINCT ON (c.dtype) o.content_id FROM onboarding_content o JOIN content c ON c.id = o.content_id ORDER BY c.dtype, o.popularity_rank) t")
     code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/api/users/me/initial-contents \
         -H "Authorization: Bearer $token" -H 'Content-Type: application/json' -d "{\"contentIds\":[$ids]}")
     case "$code" in 200) echo "완료 (콘텐츠 $ids)";; *) echo "실패(HTTP $code)" >&2; exit 1;; esac

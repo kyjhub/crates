@@ -43,6 +43,15 @@ public class ContentController {
         return ResponseEntity.ok(new ApiResponse<>(true, result, "콘텐츠 검색 성공"));
     }
 
+    // 가입 직후 취향 콘텐츠 후보. 종류(BOOK, MOVIE, MUSIC)별 인기순 목록이며, 화면의 탭 하나가 한 번 호출한다.
+    @GetMapping("/onboarding")
+    public ResponseEntity<ApiResponse<List<ContentResponseDto>>> getOnboardingContents(
+            @RequestParam @NotBlank(message = "콘텐츠 타입을 입력해주세요.") String type)
+    {
+        List<ContentResponseDto> result = contentService.getOnboardingContents(type);
+        return ResponseEntity.ok(new ApiResponse<>(true, result, "가입 취향 콘텐츠 후보 조회 성공"));
+    }
+
     // 단건 요약 조회
     @GetMapping("/{contentId}")
     public ResponseEntity<ApiResponse<ContentResponseDto>> getContentSummary(@PathVariable Long contentId)

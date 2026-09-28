@@ -1,0 +1,62 @@
+# 부하 측정용 덧씌우기. 기본 compose 위에 자원 상한과 측정 프로파일만 얹는다.
+#
+#   docker compose --env-file crates_server.env \
+#     -f docker-compose.yml -f docker-compose.loadtest.yml up -d --build
+#
+# 개발할 때는 이 파일 없이 띄운다. 상한이 걸리면 IntelliJ 개발·시딩이 느려질 뿐 얻는 것이 없다.
+#
+# 상한의 목적은 "클라우드에서 자원을 얼마나 써야 하나"를 정하는 것이다. 서비스마다 상한을 걸어야
+# 병목이 어디서 생겼는지 판정할 수 있다. 상한이 없으면 부하가 걸린 서비스가 남은 코어를 다 가져가서
+# 어느 쪽이 모자랐는지 알 수 없고, 같은 맥에서 도는 k6가 쓸 CPU도 줄어든다.
+#
+# CPU는 환경변수로 받는다. 코어 수 실험은 파일을 고치지 않고 이렇게 한다:
+#   BACKEND_CPUS=2 docker compose ... up -d backend
+#
+# redis·minio는 상한을 두지 않는다. 측정할 API가 거치지 않는다(redis는 OAuth 임시 토큰,
+# minio는 브라우저가 이미지를 직접 받는다).
+#
+# 주의 — qdrant는 볼륨이 없다. 이 파일을 처음 적용하거나 qdrant 상한을 바꾸면 컨테이너가 다시 만들어져
+# 벡터가 사라지고, backend가 뜰 때 ContentVectorLoader가 처음부터 다시 적재한다. 한 번 적용한 뒤로는
+# qdrant를 재생성하지 않는 순서로 쓴다. postgres는 이름 있는 볼륨이라 재생성돼도 데이터가 남는다.
+
+services:
+  backend:
+    environment:
+      # SQL 출력만 끈다. 무엇을 끄고 무엇을 두는지는 application-loadtest.yaml에 있다.
+      - SPRING_PROFILES_ACTIVE=loadtest
+    deploy:
+      resources:
+        limits:
+          cpus: '${BACKEND_CPUS:-4}'
+          memory: 3g
+
+  postgres:
+    # command는 기본 compose와 합쳐지지 않고 통째로 바뀐다. shared_preload_libraries를 빼먹으면
+    # pg_stat_statements가 에러 없이 꺼지므로 기본 compose의 값을 반드시 다시 적는다.
+    #
+    # shared_buffers  기본 128MB는 board_feedback(650MB+) 하나도 담지 못한다. 레포지토리 측정은 한 계정만
+    #                 반복 조회해서 드러나지 않았지만, 계정 1,000명을 무작위로 조회하면 결과가 흔들린다.
+    #                 컨테이너 메모리의 25% — PostgreSQL 문서의 출발점이다.
+    # effective_cache_size  메모리를 잡는 설정이 아니라 플래너에게 "OS 캐시까지 합쳐 이만큼 캐시된다"고
+    #                 알려주는 값이다. 컨테이너 메모리의 75%.
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+    deploy:
+      resources:
+        limits:
+          cpus: '${PG_CPUS:-2}'
+          memory: 2g
+
+  qdrant:
+    # 벡터 183,136개 × 768차원 × 4바이트 ≈ 560MB에 HNSW 그래프가 얹힌다.
+    deploy:
+      resources:
+        limits:
+          cpus: '${QDRANT_CPUS:-1}'
+          memory: 1536m

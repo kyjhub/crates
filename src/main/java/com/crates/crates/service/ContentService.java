@@ -10,6 +10,7 @@ import com.crates.crates.entity.contents.Book;
 import com.crates.crates.entity.contents.Movie;
 import com.crates.crates.entity.contents.Music;
 import com.crates.crates.repository.ContentRepository;
+import com.crates.crates.repository.OnboardingContentRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,6 +39,7 @@ public class ContentService {
     private final MovieService movieService;
     private final BookService bookService;
     private final MusicService musicService;
+    private final OnboardingContentRepository onboardingContentRepository;
 
     public ContentResponseDto getContentSummary(Long contentId)
     {
@@ -99,6 +101,20 @@ public class ContentService {
 
         // 검색 순위(유사도 순)를 그대로 유지한다.
         return getContentSummaries(contentIds);
+    }
+
+    /**
+     * 가입 직후 고를 수 있는 한 종류의 후보 콘텐츠를 인기순으로 돌려준다(종류마다 최대 200개).
+     * 화면이 종류별 탭으로 나뉘어 있어 한 번에 한 종류만 받는다.
+     */
+    public List<ContentResponseDto> getOnboardingContents(String type)
+    {
+        String dtype = type.toUpperCase();
+        if (!List.of(Book.DTYPE, Movie.DTYPE, Music.DTYPE).contains(dtype))
+        {
+            throw new BusinessException("지원하지 않는 콘텐츠 타입입니다: " + type);
+        }
+        return getContentSummaries(onboardingContentRepository.findContentIdsByDtype(dtype));
     }
 
     public ContentDetailResponse getContentDetail(String dtype, Long contentId)
