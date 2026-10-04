@@ -1,16 +1,21 @@
 -- 콘텐츠 스키마 (JOINED 상속: content <- book / movie / music).
 --
--- ── 마이그레이션 구성 (2026-09-26 정리) ─────────────────────────────────────
--- 개발 단계라 기존 마이그레이션(V0~V12)을 기능별로 다시 묶었다. 이전에는 한 파일에서 만든 것을
--- 다음 파일에서 지우고 다시 만드는 식(인덱스 교체, FK 재생성, 컬럼 추가)이 쌓여 있었는데,
--- 최종 모양만 남기고 처음부터 그 모양으로 만든다. 항상 빈 DB에서 시작한다(docker compose down -v).
+-- ── 마이그레이션 구성 (2026-09-26 정리, 2026-10-01 다시 정리) ─────────────────
+-- 개발 단계라 마이그레이션을 기능별로 묶는다. 한 파일에서 만든 것을 다음 파일에서 지우고 다시 만드는
+-- 식(인덱스 교체, FK 재생성, 컬럼 추가)을 쌓지 않고, 최종 모양만 남겨 처음부터 그 모양으로 만든다.
+-- 항상 빈 DB에서 시작한다(docker compose down -v).
 --
---   V1  ContentSchema       콘텐츠 테이블
---   V2  UserSchema          사용자, 취향 벡터, 리프레시 토큰
---   V3  BoardSchema         보드, 보드 아이템, 좋아요 — 규칙과 조회 인덱스까지
---   V4  SystemLogSchema     로그
---   V5~V7 Seed*             콘텐츠 데이터 (Java 마이그레이션, seed 패키지)
---   V8  ContentTitleSearch  제목 검색 인덱스 — 데이터를 넣은 뒤에 만들어야 빠르다
+--   V1  ContentSchema           콘텐츠 테이블, 가입 직후 취향 콘텐츠 후보
+--   V2  UserSchema              사용자, 취향 벡터, 리프레시 토큰
+--   V3  BoardSchema             보드, 보드 아이템, 좋아요 — 규칙과 조회 인덱스까지
+--   V4  SystemLogSchema         로그
+--   V5~V7 Seed*                 콘텐츠 데이터 (Java 마이그레이션, seed 패키지)
+--   V8  ContentTitleSearch      제목 검색 인덱스 — 데이터를 넣은 뒤에 만들어야 빠르다
+--   V9  SeedOnboardingContents  가입 취향 후보 데이터 (Java) — 콘텐츠(V5~V7)가 있어야 짝지을 수 있다
+--
+-- 인덱스는 2026-10-01에 6개월 운영 시나리오 데이터로 성능 인덱스를 전부 뺐다가 근거가 있는 것만
+-- 되살렸다(이득: 블록·시간 / 비용: 크기·쓰기 WAL). 판단 근거는 각 인덱스 위 주석과
+-- Notion "레포지토리 메서드 성능 테스트 — 인덱스 다시 정하기".
 --
 -- ── 스키마를 바꿀 때 ──────────────────────────────────────────────────────
 -- 테이블 정의는 Hibernate가 엔티티에서 생성한 DDL을 옮긴 것이다. 손으로 쓰면 엔티티와 어긋난다.
@@ -70,3 +75,22 @@ create table music (
 alter table book  add constraint fk_book_content  foreign key (content_id) references content;
 alter table movie add constraint fk_movie_content foreign key (content_id) references content;
 alter table music add constraint fk_music_content foreign key (content_id) references content;
+
+-- ── 가입 직후 취향 콘텐츠 후보 ───────────────────────────────────────────
+-- 가입한 사용자는 이 목록에서 1~10개를 골라 첫 취향 벡터를 만든다(UserVectorService.initialize).
+-- 제목 검색 대신 종류별 인기순 목록을 스크롤하며 고르게 해서, 무엇을 검색할지 모르는 사용자도 바로 고를 수 있다.
+-- 목록은 data/popular_top200_ids.csv(종류별 인기순 200개)에서 V9가 채운다.
+--
+-- 콘텐츠 하나는 후보에 한 번만 들어가므로 content_id가 곧 기본키다(OnboardingContent의 @MapsId).
+-- 종류(dtype)는 content에 있어 여기 두지 않는다. 600행이라 종류별 조회도 조인으로 충분하다
+-- (실측: 탭 하나 200행에 2,384블록 / 0.4㎳ — 후보 595행 전부를 content에서 확인한다. 후보 수가 고정이라 커지지 않는다).
+create table onboarding_content (
+    content_id      bigint  not null,
+    -- 같은 종류 안에서의 인기 순위(1부터). 화면은 이 순서대로 보여준다.
+    -- CSV의 원래 순위를 그대로 둔다. 벡터가 없어 시딩되지 않은 콘텐츠의 자리는 비어 있을 수 있다.
+    popularity_rank integer not null,
+    primary key (content_id)
+);
+
+alter table onboarding_content
+    add constraint fk_onboarding_content_content foreign key (content_id) references content;

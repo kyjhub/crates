@@ -10,7 +10,8 @@ import java.time.LocalDateTime;
 @Entity
 @Table(
         name = "user_refresh_tokens",
-        indexes = @Index(name = "idx_user_refresh_tokens_expires_at", columnList = "expiresAt")
+        // 로그인(사용자 토큰을 만료순으로 잠금 조회)과 로그아웃(사용자 토큰 삭제)이 user_id로 찾는다. 근거는 V2.
+        indexes = @Index(name = "idx_user_refresh_tokens_user", columnList = "userId, expiresAt")
 )
 @Getter
 @NoArgsConstructor

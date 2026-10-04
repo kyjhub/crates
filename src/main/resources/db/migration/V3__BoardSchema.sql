@@ -89,12 +89,24 @@ alter table board_feedback add constraint fk_feedback_user  foreign key (user_id
 -- board_type=? 6,900회). 증상이 간헐적이라 더 나쁘다 — 재현하려면 SET plan_cache_mode = force_generic_plan.
 --
 -- 규칙: 쿼리에 상수로 박히는 조건(deleted_at IS NULL)만 술어에 두고, 파라미터로 넘어오는 조건
---       (rating, board_type)은 인덱스 컬럼에 둔다.
+--       (rating, board_type)은 인덱스 컬럼에 둔다. 술어와 같은 조건이 쿼리에 꼭 필요하면 쿼리 쪽에서
+--       상수로 박는다(네이티브 쿼리 — 아래 signature 조회).
+--
+-- 근거 수치는 2026-10-01 6개월 운영 시나리오(보드 250,800 / 좋아요 342,000 / 측정 계정 좋아요 540·만든 보드 180)에서
+-- 성능 인덱스를 전부 뺐다가 하나씩 되살리며 잰 값이다. "쓰기 WAL"은 그 쓰기 1건이 남기는 변경 기록의 크기다.
 
 
 -- ── board: 콘텐츠 구성(content_signature) 기준 중복 방지 ─────────────────
 -- 유니크의 의미가 부분적이라(삭제되지 않은 AI_RECOMMEND 안에서만 유일) 일반 유니크로 바꿀 수 없다.
--- 그래서 제약은 부분 유니크 인덱스로 두고, 조회는 아래 idx_board_signature_lookup이 맡는다.
+-- 그래서 부분 유니크 인덱스로 두고, 같은 구성의 보드를 찾는 조회도 이 인덱스가 맡는다.
+--
+-- 조회 쿼리(BoardRepository.findActiveAiBoardBySignature, findActiveUserBoardBySignature)는 board_type을
+-- SQL에 상수로 박는 네이티브 쿼리다. Hibernate는 JPQL의 enum 값을 바인드 파라미터로 바꾸는데, 그러면
+-- 제네릭 플랜이 이 부분 인덱스를 쓰지 못하고 board 전체를 훑는다(실측: 8,163블록 11.4ms -> 상수로 박으면 4블록 0.007ms).
+--
+-- 예전에는 board_type을 컬럼으로 둔 별도 인덱스(idx_board_signature_lookup)로 막았다. 같은 signature를
+-- 한 벌 더 담아 크기 24MB, 좋아요 수 변경 1건마다 쓰기 WAL +32%, 보드 생성 +24%였다. 쿼리가 부분 인덱스의
+-- 조건을 그대로 말하게 해서 없앴다.
 
 -- AI_RECOMMEND는 전역 공용 보드다. 콘텐츠 구성이 같으면 같은 보드이며, 하나로 모아야
 -- 좋아요가 여러 행으로 분산되지 않는다.
@@ -106,26 +118,17 @@ create unique index uk_board_ai_signature on board (content_signature)
 create unique index uk_board_user_signature on board (user_id, content_signature)
     where board_type = 'USER_CUSTOM' and deleted_at is null;
 
--- signature 조회. 위 유니크 인덱스는 board_type을 술어에 두고 있어 제네릭 플랜에서 쓰이지 못하고
--- board 전체를 훑는다(실측 board 3,128행: 리터럴 buffers 2 / 바인드 파라미터 Seq Scan buffers 74).
--- 보드 수에 비례해 나빠진다 — board 620 -> 3,128행에서 처리량 107 -> 40 TPS.
---
--- 컬럼이 셋인 이유: 덮어야 하는 조회가 둘이다.
---   findActiveByTypeAndSignature      board_type + content_signature
---   findActiveUserBoardBySignature    board_type + content_signature + user_id
--- USER_CUSTOM은 사용자가 다르면 같은 signature를 가질 수 있고, 인기 보드를 N명이 제목만 바꿔 담으면
--- 같은 signature 행이 N개 쌓인다. user_id가 없으면 그 N행을 Filter로 걸러낸다
--- (같은 signature 3,000행: 2컬럼 buffers 32 0.180ms / 3컬럼 buffers 4 0.020ms).
--- board_type을 선두에 두면 앞 두 컬럼이 findActiveByTypeAndSignature의 접두사가 된다.
-create index idx_board_signature_lookup on board (board_type, content_signature, user_id)
-    where deleted_at is null;
-
 
 -- ── board: 목록 조회 ─────────────────────────────────────────────────────
 
 -- 인기 보드. 정렬을 인덱스로 해결하고, id를 포함해 동률에서도 순서가 확정되게 한다.
 -- like_count는 초기에 0~2에 몰려 동률이 대량으로 생기는데, id가 없으면 LIMIT 경계에서
 -- 어떤 보드가 잘리는지가 실행마다 달라진다.
+-- (실측: 없으면 8,245블록 40.8ms -> 13블록 0.026ms. 홈에 들어올 때마다 부른다)
+--
+-- 비용: like_count가 인덱스 컬럼이라 좋아요 수 변경이 HOT 업데이트가 되지 못한다(20% -> 0%). 좋아요·취소마다
+-- board의 모든 인덱스에 새 항목이 생기고 시간이 지나면 부푼다(새로 만들면 7.7MB, 좋아요가 쌓이면 15MB).
+-- 좋아요 수 변경 1건의 쓰기 WAL은 377 -> 455바이트(+21%). 홈의 대표 쿼리를 1,500배 빠르게 하는 값으로 감수한다.
 create index idx_board_popular on board (like_count desc, id)
     where visibility = 'PUBLIC' and deleted_at is null;
 
@@ -134,15 +137,22 @@ create index idx_board_popular on board (like_count desc, id)
 --   findMyBoards 갈래 ②      user_id,              ORDER BY created_at DESC, id DESC
 -- board_type을 컬럼에 넣지 않는 이유: ck_board_owner가 (board_type = 'USER_CUSTOM') = (user_id IS NOT NULL)을
 -- 강제하므로 user_id로 좁히는 순간 board_type은 이미 USER_CUSTOM으로 확정이다. 정작 필요한 것은 정렬 순서다.
--- (실측 내가 만든 보드 20,000개: (user_id, board_type) 389블록 1.984ms -> 이 인덱스 4블록 0.011ms)
+-- (실측: 보관함 "전체" 탭 없으면 8,395블록 25.7ms -> 96블록 0.1ms. "만든 것" 탭만 보면 없어도 0.13ms다)
+--
+-- user_id IS NOT NULL을 술어에 둔다 — 소유자가 있는 보드(USER_CUSTOM)만 담는다. AI 보드는 user_id가 NULL이라
+-- 이 인덱스로 찾을 일이 없는데, 술어가 없으면 그 행(보드의 절반 이상)까지 담는다. 쿼리의 user_id = $1이
+-- 값과 상관없이 IS NOT NULL을 함의하므로 제네릭 플랜에서도 쓰인다(위 공통 규칙에 걸리지 않는다).
+-- (실측: 9.96MB -> 4.5MB. AI 보드를 만들거나 그 좋아요 수가 바뀔 때 이 인덱스를 건드리지 않아
+--  좋아요 수 변경 쓰기 WAL 478 -> 411바이트, 보드 생성 489 -> 434바이트)
 create index idx_board_owner_recent on board (user_id, created_at desc, id desc)
-    where deleted_at is null;
+    where deleted_at is null and user_id is not null;
 
 -- 삭제된 보드 배제. "살아있는 쪽"이 아니라 "삭제된 쪽"을 인덱싱한다.
 -- 취향 벡터 재계산(findLikedBoardsWithTime)은 삭제된 보드의 좋아요를 걸러내야 하는데, 살아있는 보드를
 -- 조인하면 비용이 O(전체 보드 수)다. board(id) WHERE deleted_at IS NULL 부분 인덱스는 삭제가 적을수록
 -- 테이블만큼 커져서 플래너가 아예 쓰지 않는다. 삭제된 쪽을 인덱싱해 NOT EXISTS로 배제하면 O(삭제된 보드 수)다.
 -- (실측 board 100,010행 / 삭제 100건: 조인 buffers 480 0.629ms -> 이 방식 buffers 8 0.090ms, 인덱스 16kB)
+-- (실측 2026-10-01, 측정 계정 좋아요 540건: 없으면 2,167블록 0.71ms -> 8블록 0.09ms. 크기 8kB)
 create index idx_board_deleted on board (id)
     where deleted_at is not null;
 
@@ -154,8 +164,12 @@ create index idx_board_deleted on board (id)
 -- user_id와 rating이 등치 조건이라 그 안에서 행이 이미 created_at DESC 순으로 나온다 — 정렬 연산이
 -- 사라지고 LIMIT이 앞부분만 읽고 멈춘다. id는 동률 정렬 기준(f.id DESC)이라 마지막에 둔다.
 --
+-- (실측: 없으면 백필 대상 조회 52.6ms, 보관함 좋아요 탭 6.5ms, 재계산 8.6ms -> 각각 1.4 / 0.04 / 0.09ms.
+--  비용: 19MB, 좋아요 추가 1건 쓰기 WAL 323 -> 421바이트)
+--
 -- board_id는 키가 아니라 INCLUDE다. 취향 벡터 재계산이 board_id를 돌려줘야 하는데 인덱스에 없으면
--- 행마다 힙을 찾아간다(계정당 좋아요 1만 건: 10,113블록 -> INCLUDE 후 Index Only Scan 79블록).
+-- 행마다 힙을 찾아간다(계정당 좋아요 1만 건: 10,113블록 -> INCLUDE 후 Index Only Scan 79블록,
+-- 좋아요 540건: 484 -> 8블록). 대가는 3MB(16 -> 19MB)와 좋아요 추가 1건당 WAL 11바이트다.
 -- board_id로 찾거나 정렬하는 쿼리는 없으므로 키에 넣으면 B-tree 내부 노드만 커진다.
 -- 주의: Index Only Scan은 가시성 맵에 기대므로 대량 INSERT 직후 VACUUM 전에는 이득이 줄어든다.
 create index idx_feedback_user_recent on board_feedback (user_id, rating, created_at desc, id desc)

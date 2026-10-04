@@ -1,7 +1,6 @@
 package com.crates.crates.repository;
 
 import com.crates.crates.entity.board.Board;
-import com.crates.crates.enumData.BoardType;
 import com.crates.crates.enumData.Rating;
 import com.crates.crates.enumData.Visibility;
 import org.springframework.data.domain.Pageable;
@@ -33,16 +32,25 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
     List<Board> findPopularBoards(@Param("visibility") Visibility visibility, Pageable pageable);
 
     /**
-     * 콘텐츠 구성이 같은 보드를 찾는다.
+     * 콘텐츠 구성이 같은 AI_RECOMMEND 보드를 찾는다.
      *
      * <p>AI_RECOMMEND(검색 보드 / 사용자 추천 보드)는 소유자가 없는 전역 공용 보드다.
      * 같은 구성이면 같은 보드로 취급해야 좋아요가 여러 행으로 갈라지지 않는다.
      * uk_board_ai_signature가 DB에서도 같은 규칙을 강제한다.</p>
+     *
+     * <p><b>board_type을 SQL에 상수로 박는다 — 그래서 네이티브다.</b> uk_board_ai_signature는
+     * {@code board_type = 'AI_RECOMMEND'}인 행만 담는 부분 인덱스다. Hibernate는 JPQL에 enum 값을 박아도
+     * {@code board_type = ?}(바인드 파라미터)로 보내는데, 그러면 범용 실행 계획(값을 모르는 계획)은
+     * {@code ?}가 'AI_RECOMMEND'라고 증명할 수 없어 이 인덱스를 못 쓰고 board 전체를 훑는다
+     * (실측 2026-10-01, 보드 250,800: 8,163블록 / 11.4㎳ → 상수로 박으면 4블록 / 0.007㎳).
+     * 예전에는 board_type을 컬럼으로 담은 인덱스(idx_board_signature_lookup, 24MB, 좋아요 1건당 WAL +32%)를
+     * 따로 두어 막았는데, 쿼리가 부분 인덱스의 조건을 그대로 말하게 하면 그 인덱스가 필요 없다.</p>
      */
-    @Query("SELECT b FROM Board b " +
-           "WHERE b.boardType = :boardType AND b.contentSignature = :signature AND b.deletedAt IS NULL")
-    Optional<Board> findActiveByTypeAndSignature(@Param("boardType") BoardType boardType,
-                                                 @Param("signature") String signature);
+    @Query(value = """
+            SELECT b.* FROM board b
+             WHERE b.board_type = 'AI_RECOMMEND' AND b.content_signature = :signature AND b.deleted_at IS NULL
+            """, nativeQuery = true)
+    Optional<Board> findActiveAiBoardBySignature(@Param("signature") String signature);
 
     /**
      * "내 보드"(보관함 전체 탭) — 내가 만든 보드와 내가 좋아요한 보드를 합쳐 최근에 담은 순으로.
@@ -172,10 +180,16 @@ public interface BoardRepository extends JpaRepository<Board, Long> {
      *
      * <p>uk_board_user_signature와 같은 규칙이다. DB 제약에 부딪혀 500이 나기 전에
      * 미리 확인해 사용자에게 설명 가능한 메시지를 돌려주기 위한 조회다.</p>
+     *
+     * <p>board_type을 상수로 박으려고 네이티브로 쓴다 — {@link #findActiveAiBoardBySignature}와 같은 이유다.
+     * JPQL에 {@code BoardType.USER_CUSTOM}을 박아도 Hibernate가 파라미터로 바꿔, 범용 실행 계획에서
+     * uk_board_user_signature(USER_CUSTOM 행만 담는 부분 인덱스)를 쓰지 못한다.</p>
      */
-    @Query("SELECT b FROM Board b " +
-           "WHERE b.boardType = com.crates.crates.enumData.BoardType.USER_CUSTOM " +
-           "AND b.user.id = :userId AND b.contentSignature = :signature AND b.deletedAt IS NULL")
+    @Query(value = """
+            SELECT b.* FROM board b
+             WHERE b.board_type = 'USER_CUSTOM' AND b.user_id = :userId
+               AND b.content_signature = :signature AND b.deleted_at IS NULL
+            """, nativeQuery = true)
     Optional<Board> findActiveUserBoardBySignature(@Param("userId") Long userId,
                                                    @Param("signature") String signature);
 

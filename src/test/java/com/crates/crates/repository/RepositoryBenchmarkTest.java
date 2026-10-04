@@ -1,7 +1,6 @@
 package com.crates.crates.repository;
 
 import com.crates.crates.enumData.AuthProvider;
-import com.crates.crates.enumData.BoardType;
 import com.crates.crates.enumData.Rating;
 import com.crates.crates.entity.board.Board;
 import com.crates.crates.enumData.Visibility;
@@ -43,7 +42,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <h2>데이터 준비</h2>
  * <pre>
  *   psql ... &lt; load-test/cleanup.sql          # 이전 실행의 흔적 + 공간 회수
- *   ./load-test/seed.sh 1000 20000 10000      # 계정 / 보드 / 계정당 좋아요
+ *   ./load-test/seed.sh 3 1 0.6 1.0           # 6개월 누적: 하루 좋아요 / 하루 보드 수정 / 인기 보드 비율 / 지프 s
+ *   VACUUM ANALYZE
  *   ./gradlew test --tests '*RepositoryBenchmarkTest' --rerun-tasks
  * </pre>
  * 준비 없이 돌리면 픽스처 단계에서 실패한다. <b>0행을 반환하는 쿼리를 재고 "빠르다"고
@@ -59,7 +59,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>쓰기 메서드는 트랜잭션이 롤백되므로 안전하다. 다만 같은 행을 200번 지우면 두 번째부터
  * 0행이 되므로, 반복마다 다른 대상을 쓴다.</p>
  *
- * <p>시더가 만들지 않는 데이터(USER_CUSTOM 보드, 리프레시 토큰, OAuth 계정)는 트랜잭션 안에서
+ * <p>시더가 만들지 않는 데이터(리프레시 토큰, OAuth 계정)는 트랜잭션 안에서
  * 만들고 {@code ANALYZE}까지 돌린다. 통계를 갱신하지 않으면 플래너가 빈 테이블을 가정해
  * 엉뚱한 계획을 고른다. 이 행들도 롤백과 함께 사라진다.</p>
  */
@@ -95,6 +95,7 @@ class RepositoryBenchmarkTest {
     @Autowired private MovieRepository movieRepository;
     @Autowired private BookRepository bookRepository;
     @Autowired private MusicRepository musicRepository;
+    @Autowired private OnboardingContentRepository onboardingContentRepository;
     @Autowired private UserRepository userRepository;
     @Autowired private UserVectorRepository userVectorRepository;
     @Autowired private UserRefreshTokenRepository userRefreshTokenRepository;
@@ -148,11 +149,13 @@ class RepositoryBenchmarkTest {
         benchmark("BoardRepository.findPopularBoards  (인기 보드, 10건)", i ->
                 boardRepository.findPopularBoards(Visibility.PUBLIC, PageRequest.of(0, 10)).size());
 
-        benchmark("BoardRepository.findActiveByTypeAndSignature", i ->
-                boardRepository.findActiveByTypeAndSignature(BoardType.AI_RECOMMEND, aiSignature).isPresent() ? 1 : 0);
+        benchmark("BoardRepository.findActiveAiBoardBySignature", i ->
+                boardRepository.findActiveAiBoardBySignature(aiSignature).isPresent() ? 1 : 0);
 
-        String customSignature = seedUserCustomBoards(userId, 2_000);
-        seedOwnBoardLikes(userId, 300);
+        // 측정 계정이 실제로 만든 보드의 signature. 시더가 가입 시기만큼 사용자 보드를 만들어 둔다.
+        String customSignature = jdbcTemplate.queryForObject(
+                "SELECT content_signature FROM board WHERE user_id = ? AND board_type = 'USER_CUSTOM' "
+                        + "AND deleted_at IS NULL ORDER BY id LIMIT 1", String.class, userId);
 
         benchmark("BoardRepository.findLikeCountById", i ->
                 boardRepository.findLikeCountById(boards.get(i % boards.size())).isPresent() ? 1 : 0);
@@ -164,10 +167,10 @@ class RepositoryBenchmarkTest {
                 boardRepository.decrementLikeCount(boards.get(i % boards.size())));
 
         benchmark("BoardRepository.findCreatedByMe  (보관함 만든 것 탭, 20건)", i ->
-                boardRepository.findCreatedByMe(userId, PageRequest.of(0, 20)).size(), "픽스처");
+                boardRepository.findCreatedByMe(userId, PageRequest.of(0, 20)).size());
 
         benchmark("BoardRepository.findActiveUserBoardBySignature", i ->
-                boardRepository.findActiveUserBoardBySignature(userId, customSignature).isPresent() ? 1 : 0, "픽스처");
+                boardRepository.findActiveUserBoardBySignature(userId, customSignature).isPresent() ? 1 : 0);
     }
 
     /**
@@ -179,30 +182,17 @@ class RepositoryBenchmarkTest {
      * <p>기존 쿼리는 운영 코드에서 지웠으므로 여기서 네이티브로 되살린다. 비교를 재현할 수
      * 있게 하려고 남기는 것이지, 되돌리려는 것이 아니다.</p>
      *
-     * <p><b>"내가 만든 보드" 수가 결과를 좌우한다.</b> 재작성 후 남는 비용은 그 갈래이고,
-     * idx_board_owner가 (user_id, board_type)이라 created_at 순서를 주지 못해 내가 만든 보드를
-     * 전부 읽고 정렬하기 때문이다. 비용이 O(내가 만든 보드 수)라 규모를 바꿔가며 잰다.</p>
+     * <p>측정 계정은 시더가 만든 그대로 쓴다 — 가장 오래 쓴 사용자(6개월 시나리오에서 좋아요 540 /
+     * 만든 보드 180)다. 예전에는 "내가 만든 보드"를 2,000·20,000개 트랜잭션 안에서 몰아 넣고 롤백했는데,
+     * 그 규모는 실제 가정에서 나온 값이 아니었고 롤백 뒤에도 board 인덱스에 빈 페이지가 남았다.</p>
+     *
+     * <p>11페이지(OFFSET 200)는 좋아요와 만든 보드를 합쳐 220건이 넘을 때만 의미가 있다.</p>
      */
     @Test
-    @DisplayName("[성능] 보관함 전체 탭 — 내가 만든 보드 2,000개")
-    void benchmarkMyBoardsWith2kOwned() {
-        benchmarkMyBoards(2_000);
-    }
-
-    @Test
-    @DisplayName("[성능] 보관함 전체 탭 — 내가 만든 보드 20,000개")
-    void benchmarkMyBoardsWith20kOwned() {
-        benchmarkMyBoards(20_000);
-    }
-
-    private void benchmarkMyBoards(int ownedBoards) {
+    @DisplayName("[성능] 보관함 전체 탭 — 측정 계정")
+    void benchmarkMyBoards() {
         Long userId = userWithMostLikes();
-        int overlap = ownedBoards * 15 / 100;   // 만든 보드의 15%는 내가 좋아요도 했다
-
-        seedUserCustomBoards(userId, ownedBoards);
-        seedOwnBoardLikes(userId, overlap);
-
-        String label = " (만든 보드 " + ownedBoards + "개)";
+        String label = " (좋아요 " + countLikes(userId) + " / 만든 보드 " + countOwned(userId) + ")";
 
         benchmark("findMyBoards 기존 JPQL  1페이지" + label, i ->
                 legacyMyBoards(userId, 20, 0).size());
@@ -273,6 +263,24 @@ class RepositoryBenchmarkTest {
 
         benchmark("ContentRepository.searchContentIdsByTitle  (pg_trgm, 20건)", i ->
                 contentRepository.searchContentIdsByTitle(keyword, 20, 0).size());
+    }
+
+    // ── OnboardingContentRepository ─────────────────────────────────────────
+
+    @Test
+    @DisplayName("[성능] OnboardingContentRepository")
+    void benchmarkOnboardingContentRepository() {
+        // 가입 화면이 탭 하나를 열 때 부르는 쿼리. 종류마다 행 수가 같아(200/200/195) 한 종류로 잰다.
+        // 선택 검증은 최대 선택 수(10개)로 잰다. 인기 상위부터 고르는 것이 흔한 경우라 순위 앞쪽을 쓴다.
+        List<Long> picked = jdbcTemplate.queryForList(
+                "SELECT content_id FROM onboarding_content ORDER BY popularity_rank, content_id LIMIT 10", Long.class);
+        assertThat(picked).as("onboarding_content가 비어 있다 — V9 시딩을 확인할 것").hasSize(10);
+
+        benchmark("OnboardingContentRepository.findContentIdsByDtype  (가입 후보 탭, 200건)", i ->
+                onboardingContentRepository.findContentIdsByDtype("BOOK").size());
+
+        benchmark("OnboardingContentRepository.countByContentIdIn  (선택 검증, 10건)", i ->
+                (int) onboardingContentRepository.countByContentIdIn(picked));
     }
 
     // ── Movie / Book / Music ────────────────────────────────────────────────
@@ -424,7 +432,8 @@ class RepositoryBenchmarkTest {
     // ── 픽스처 ──────────────────────────────────────────────────────────────
 
     /**
-     * 좋아요를 가장 많이 가진 부하테스트 계정. 하드코딩한 id를 쓰면 안 된다 —
+     * 측정 계정 — 좋아요를 가장 많이 가진 부하테스트 계정. 6개월 시나리오에서는 가장 오래 쓴
+     * 1개월차 가입자다(좋아요 540 / 만든 보드 180). 하드코딩한 id를 쓰면 안 된다 —
      * seed.sh는 매번 새 계정을 만들고 cleanup.sql이 지우므로 id가 고정되지 않는다.
      */
     private Long userWithMostLikes() {
@@ -440,7 +449,7 @@ class RepositoryBenchmarkTest {
 
         assertThat(ids)
                 .as("좋아요를 가진 loadtest 계정이 없습니다. "
-                        + "먼저 ./load-test/seed.sh <계정수> <보드수> <계정당좋아요> 를 실행하세요")
+                        + "먼저 ./load-test/seed.sh 를 실행하세요")
                 .isNotEmpty();
         return ids.get(0);
     }
@@ -465,47 +474,10 @@ class RepositoryBenchmarkTest {
         return ids;
     }
 
-    /**
-     * 한 계정에 USER_CUSTOM 보드를 몰아준다("내가 만든 보드"가 많은 계정). 시더는 계정마다 고르게
-     * 나눠 주므로(1만 개 / 1,000명 = 10개) 이 규모는 여기서 만든다. 롤백되지만 통계는 갱신해야
-     * 플래너가 제대로 고른다.
-     *
-     * <p>예전에는 AI 보드의 signature를 복사해 만들었는데, 그러면 AI 보드 수보다 많이 만들 수 없다
-     * (AI 보드 1만 개에서 "2만 개"를 요청하면 조용히 1만 개만 생긴다). signature는 사용자 안에서
-     * 유일하기만 하면 되므로 번호로 만든다. 시더의 보드와 겹칠 일이 없는 형식이다.</p>
-     */
-    private String seedUserCustomBoards(Long userId, int count) {
-        jdbcTemplate.update("""
-                INSERT INTO board (user_id, board_type, visibility, title, content_signature, like_count, created_at)
-                SELECT ?, 'USER_CUSTOM', 'PRIVATE', 'bench-custom-' || g, 'bench-' || g, 0,
-                       now() - (g || ' minutes')::interval
-                  FROM generate_series(1, ?) g
-                """, userId, count);
-        jdbcTemplate.execute("ANALYZE board");   // ANALYZE는 트랜잭션 안에서 돌고 롤백과 함께 되돌아간다
-        return jdbcTemplate.queryForObject(
-                "SELECT content_signature FROM board WHERE user_id = ? AND board_type = 'USER_CUSTOM' "
-                        + "ORDER BY id LIMIT 1", String.class, userId);
-    }
-
-    /**
-     * 내가 만든 보드 일부에 내 좋아요를 단다. 전체 탭의 중복 제거가 실제로 갈라지게 하려면 필요하다.
-     *
-     * <p><b>겹치는 보드를 최신순 앞쪽에 몰면 안 된다.</b> 처음에는 {@code ORDER BY b.id LIMIT n}으로
-     * 골랐는데, 만든 시각이 id 역순이라 결과적으로 "가장 최근 보드 n개"가 전부 겹침이 됐다.
-     * 그러면 "만든 것" 갈래가 앞에서부터 n개를 헛돌고서야 첫 행을 찾는다 — 실측에서 149블록짜리
-     * 계획이 1,206블록으로 나왔다. 전체에 고르게 흩어야 분포가 현실에 가깝다.</p>
-     */
-    private void seedOwnBoardLikes(Long userId, int count) {
-        jdbcTemplate.update("""
-                INSERT INTO board_feedback (board_id, user_id, rating, created_at)
-                SELECT id, ?, 'LIKE', now() - ((id % 97) || ' hours')::interval
-                  FROM (SELECT b.id, row_number() OVER (ORDER BY b.created_at DESC) AS rn
-                          FROM board b
-                         WHERE b.user_id = ? AND b.board_type = 'USER_CUSTOM' AND b.deleted_at IS NULL) t
-                 WHERE rn % GREATEST(? / GREATEST(?, 1), 1) = 0
-                ON CONFLICT DO NOTHING
-                """, userId, userId, countOwned(userId), count);
-        jdbcTemplate.execute("ANALYZE board_feedback");
+    private int countLikes(Long userId) {
+        Integer n = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM board_feedback WHERE user_id = ? AND rating = 'LIKE'", Integer.class, userId);
+        return n == null ? 0 : n;
     }
 
     private int countOwned(Long userId) {

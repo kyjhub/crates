@@ -25,7 +25,7 @@ import java.sql.Statement;
  */
 @Slf4j
 @Component
-public class V10__SeedOnboardingContents extends BaseJavaMigration {
+public class V9__SeedOnboardingContents extends BaseJavaMigration {
 
     private static final String CSV_RESOURCE = "/data/popular_top200_ids.csv";
 
