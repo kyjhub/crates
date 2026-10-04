@@ -47,3 +47,45 @@ export function standard({ vus, iterations, p95 = 2000 }) {
     summaryTrendStats: ['avg', 'min', 'med', 'p(95)', 'p(99)', 'max'],
   };
 }
+
+/**
+ * 도착률 고정 프로파일. 자원 상한을 찾는 측정(run-sweep.sh)이 쓴다.
+ *
+ * standard()와 무엇이 다른가 — standard는 VU 수를 고정해 "주어진 일감을 얼마나 빨리 끝내나"를 잰다(닫힌 모델).
+ * 서버가 느려지면 요청도 같이 줄어 느려짐이 처리율 숫자 뒤에 숨는다. 여기서는 초당 RATE건이 서버 상태와
+ * 상관없이 도착한다(열린 모델). 실제 사용자는 서버가 느리다고 덜 오지 않으므로, "이 사양이 초당 N건을
+ * 목표 시간 안에 받아내는가"는 이 모델로만 답할 수 있다.
+ *
+ * RATE·DURATION은 환경변수로 받는다. run-sweep.sh가 단계마다 RATE를 바꿔 k6를 다시 띄운다.
+ *
+ * VU가 모자라 제때 시작하지 못한 요청은 dropped_iterations로 센다. 0이 아니면 그 단계의 도착률은
+ * 지켜지지 않은 것이다 — 서버가 느려 VU가 다 묶였거나(maxVUs 도달), k6 자신이 모자란 것이다.
+ *
+ * 응답 시간은 http_req_duration이 아니라 lib/metrics.js의 api_duration으로 본다. setup에서 준비용으로
+ * 보내는 요청(api-content-detail의 콘텐츠 요약 300번 등)이 http_req_duration에 섞이기 때문이다.
+ *
+ * @param p95  목표 p95(ms). 넘으면 threshold 실패로 기록된다
+ */
+export function arrival({ p95 }) {
+  const rate = Number(__ENV.RATE || 10);
+  return {
+    scenarios: {
+      main: {
+        executor: 'constant-arrival-rate',
+        rate,
+        timeUnit: '1s',
+        duration: __ENV.DURATION || '60s',
+        preAllocatedVUs: Math.max(10, rate * 2),
+        // 응답이 1초까지 늘어도 도착률을 지킬 만큼. 이걸 넘으면 서버가 이미 목표를 한참 넘긴 상태다.
+        maxVUs: Math.max(50, rate * 10),
+        gracefulStop: '10s',
+      },
+    },
+    thresholds: {
+      api_duration: [`p(95)<${p95}`],
+      api_failed: ['rate<0.01'],
+    },
+    setupTimeout: '180s',
+    summaryTrendStats: ['avg', 'min', 'med', 'p(95)', 'p(99)', 'max'],
+  };
+}
