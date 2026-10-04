@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 @Slf4j
 @Service
@@ -25,6 +26,7 @@ public class RecommendationService {
     private final ContentService contentService;
     private final BoardService boardService;
     private final BoardTitleService boardTitleService;
+    private final RecommendationCache recommendationCache;
 
     /** 유사도 순으로 고른 콘텐츠와 그 벡터. 벡터는 보드 제목을 정할 때 쓴다. */
     public record SimilarContents(List<ContentResponseDto> contents, Map<Long, float[]> vectorById) {
@@ -48,43 +50,73 @@ public class RecommendationService {
      */
     public List<BoardWithContentsDto> recommendBoards(Long userId)
     {
+        UserVectorService.VectorSnapshot vector = userVectorService.getSnapshot(userId);
+
+        // 이 취향 벡터로 계산해 둔 결과가 있으면 Qdrant를 건너뛴다(RecommendationCache).
+        // 저장 여부·좋아요 상태·콘텐츠 요약은 캐시에 없으므로 아래에서 매번 새로 읽는다.
+        Optional<List<BoardWithContentsDto>> cached = recommendationCache.get(userId, vector.version())
+                .flatMap(entry -> fromCache(entry, userId));
+        if (cached.isPresent())
+        {
+            return cached.get();
+        }
+
         // 유사도 상위 32건을 받아 8건씩 끊어 4개 보드로 만든다.
         // 앞쪽 보드일수록 취향에 가깝다.
-        SimilarContents similar = findSimilar(
-                userVectorService.getVector(userId), Board.ITEMS_PER_BOARD * RECOMMENDED_BOARD_COUNT);
-        List<ContentResponseDto> contents = similar.contents();
+        SimilarContents similar = findSimilar(vector.vector(), Board.ITEMS_PER_BOARD * RECOMMENDED_BOARD_COUNT);
+        List<List<ContentResponseDto>> slices = slicesOf(similar.contents());
 
-        // 8건을 못 채우는 나머지는 버린다. 모자란 보드는 좋아요를 눌러도 저장이 거절된다.
-        // subList는 원본을 들여다보는 뷰라, 응답에 그대로 담지 않고 복사한다.
+        // 보드 4개의 제목을 한 번의 묶음 검색으로 정한다. 보드마다 자기 평균 벡터로 따로 검색된다.
+        // 캐시에 담아 두려고 저장된 보드의 제목도 함께 구한다(묶음 한 번이라 왕복은 늘지 않는다).
+        // 매칭(Qdrant 검색)은 트랜잭션 밖인 여기서 한다. BoardService 안에서 하면 커넥션을 쥐고 기다린다.
+        List<String> titles = boardTitleService.titlesFor(slices.stream().map(similar::vectorsOf).toList());
+
+        recommendationCache.put(userId, new RecommendationCache.Entry(
+                vector.version(),
+                slices.stream().flatMap(List::stream).map(ContentResponseDto::id).toList(),
+                titles));
+
+        return toBoards(slices, titles, userId);
+    }
+
+    /**
+     * 캐시의 콘텐츠 id와 제목으로 보드를 다시 만든다. 그 사이 콘텐츠가 지워져 개수가 맞지 않으면 빈 값 — 다시 계산한다.
+     */
+    private Optional<List<BoardWithContentsDto>> fromCache(RecommendationCache.Entry entry, Long userId)
+    {
+        List<ContentResponseDto> contents = contentService.getContentSummaries(entry.contentIds());
+        if (contents.size() != entry.contentIds().size())
+        {
+            return Optional.empty();
+        }
+        return Optional.of(toBoards(slicesOf(contents), entry.titles(), userId));
+    }
+
+    /**
+     * 콘텐츠를 8건씩 끊는다. 8건을 못 채우는 나머지는 버린다 — 모자란 보드는 좋아요를 눌러도 저장이 거절된다.
+     * subList는 원본을 들여다보는 뷰라, 응답에 그대로 담지 않고 복사한다.
+     */
+    private List<List<ContentResponseDto>> slicesOf(List<ContentResponseDto> contents)
+    {
         List<List<ContentResponseDto>> slices = new ArrayList<>(RECOMMENDED_BOARD_COUNT);
         for (int from = 0; from + Board.ITEMS_PER_BOARD <= contents.size(); from += Board.ITEMS_PER_BOARD)
         {
             slices.add(List.copyOf(contents.subList(from, from + Board.ITEMS_PER_BOARD)));
         }
+        return slices;
+    }
 
-        // 같은 구성의 보드가 이미 저장돼 있으면 저장된 제목을 쓴다(PostgreSQL). query 매칭은 저장 안 된 보드만 한다.
+    /** 같은 구성의 보드가 이미 저장돼 있으면 저장된 보드(제목·좋아요 상태)를, 아니면 정해 둔 제목으로 미저장 보드를 만든다. */
+    private List<BoardWithContentsDto> toBoards(List<List<ContentResponseDto>> slices, List<String> titles, Long userId)
+    {
         List<BoardWithContentsDto> boards = new ArrayList<>(slices.size());
-        List<Integer> unsavedIndexes = new ArrayList<>();
-        for (List<ContentResponseDto> slice : slices)
+        for (int i = 0; i < slices.size(); i++)
         {
-            BoardWithContentsDto saved = boardService.findSavedGeneratedBoard(slice, userId).orElse(null);
-            if (saved == null)
-            {
-                unsavedIndexes.add(boards.size());
-            }
-            boards.add(saved);
+            List<ContentResponseDto> slice = slices.get(i);
+            String title = titles.get(i);
+            boards.add(boardService.findSavedGeneratedBoard(slice, userId)
+                    .orElseGet(() -> BoardWithContentsDto.unsaved(title, slice)));
         }
-
-        // 저장 안 된 보드들의 제목을 한 번의 묶음 검색으로 정한다. 보드마다 자기 평균 벡터로 따로 검색된다.
-        // 매칭(Qdrant 검색)은 트랜잭션 밖인 여기서 한다. BoardService 안에서 하면 커넥션을 쥐고 기다린다.
-        List<String> titles = boardTitleService.titlesFor(
-                unsavedIndexes.stream().map(index -> similar.vectorsOf(slices.get(index))).toList());
-        for (int i = 0; i < unsavedIndexes.size(); i++)
-        {
-            int index = unsavedIndexes.get(i);
-            boards.set(index, BoardWithContentsDto.unsaved(titles.get(i), slices.get(index)));
-        }
-
         return boards;
     }
 
