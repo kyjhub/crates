@@ -371,16 +371,20 @@ public class BoardService {
     }
 
     /**
-     * 즉석에서 만들어진 보드(검색 결과, 오늘의 추천)를 응답으로 확정한다.
+     * 즉석에서 만들어진 보드(검색 결과, 오늘의 추천)와 같은 구성의 보드가 이미 저장돼 있으면 그 응답을 돌려준다.
      *
-     * <p>같은 콘텐츠 구성의 보드가 이미 저장돼 있으면 그 boardId·좋아요 수·내 좋아요 여부를 채워준다.
-     * 이 조회가 없으면, 좋아요를 눌러 저장한 뒤 다시 검색했을 때 하트가 비어 있고 좋아요 수가
-     * 0으로 보인다. 저장 여부는 화면이 아니라 DB가 알고 있어야 한다.</p>
+     * <p>저장돼 있으면 boardId·좋아요 수·내 좋아요 여부를 채워준다. 이 조회가 없으면, 좋아요를 눌러 저장한 뒤
+     * 다시 검색했을 때 하트가 비어 있고 좋아요 수가 0으로 보인다. 저장 여부는 화면이 아니라 DB가 알고 있어야 한다.</p>
      *
      * <p>이미 저장된 보드라면 <b>저장 시점의 제목</b>을 쓴다. 방금 만들어낸 제목으로 덮으면
      * 그 보드에 좋아요를 누른 다른 사용자들이 보던 이름과 달라진다.</p>
+     *
+     * <p><b>저장되지 않은 보드의 제목은 여기서 만들지 않는다.</b> 제목을 정하려면 Qdrant에서 query를 검색해야 하는데,
+     * 이 메서드는 트랜잭션 안이라 그동안 DB 커넥션을 쥐고 기다리게 된다. 예전에는 제목을 Supplier로 받아 여기서
+     * 만들었고, Qdrant가 포화되자 커넥션 풀이 막혀 추천과 무관한 API까지 느려졌다(2026-10-04 부하 측정:
+     * 혼합 150/s에서 풀 대기 56, 다른 API p95 4ms → 381ms). 호출하는 쪽이 비어 있을 때 트랜잭션 밖에서 제목을 만든다.</p>
      */
-    public BoardWithContentsDto resolveGeneratedBoard(String title, List<ContentResponseDto> contents, Long userId)
+    public Optional<BoardWithContentsDto> findSavedGeneratedBoard(List<ContentResponseDto> contents, Long userId)
     {
         String signature = Board.signatureOf(contents.stream().map(ContentResponseDto::id).toList());
 
@@ -390,8 +394,7 @@ public class BoardService {
                         board.getTitle(),
                         board.getLikeCount(),
                         boardFeedbackRepository.existsByBoardIdAndUserIdAndRating(board.getId(), userId, Rating.LIKE),
-                        contents))
-                .orElseGet(() -> BoardWithContentsDto.unsaved(title, contents));
+                        contents));
     }
 
     /**

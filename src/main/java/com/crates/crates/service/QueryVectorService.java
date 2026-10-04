@@ -20,6 +20,19 @@ public class QueryVectorService {
     @Value("${ai.vectorstore.qdrant.query-collection-name}")
     private String collectionName;
 
+    public void ensureCollection(int vectorDimension) {
+        pointOperations.ensureCollection(collectionName, vectorDimension);
+    }
+
+    public void recreateCollection(int vectorDimension) {
+        pointOperations.deleteCollection(collectionName);
+        pointOperations.ensureCollection(collectionName, vectorDimension);
+    }
+
+    public long countPoints() {
+        return pointOperations.count(collectionName);
+    }
+
     public void upsert(QueryVectorRecord record) {
         upsertAll(List.of(record));
     }
