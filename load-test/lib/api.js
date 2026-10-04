@@ -58,8 +58,9 @@ export function randomContentIds() {
 /**
  * 아직 저장되지 않은 보드에 좋아요. 보드 생성 + 좋아요가 한 번에 일어난다.
  *
- * 이 경로가 findActiveByTypeAndSignature를 부르므로 V3의 idx_board_signature_lookup을
- * 검증하는 자리다. 호출할 때마다 board 행이 하나 늘어난다.
+ * 이 경로가 findActiveAiBoardBySignature를 부른다 — board_type을 상수로 박은 네이티브 쿼리라
+ * 제네릭 플랜에서도 uk_board_ai_signature(부분 유니크 인덱스)를 쓰는지 검증하는 자리다(V3).
+ * 호출할 때마다 board 행이 하나 늘어난다.
  */
 export function likeNewBoard(token, title) {
   return http.post(

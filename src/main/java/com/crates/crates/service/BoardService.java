@@ -384,7 +384,7 @@ public class BoardService {
     {
         String signature = Board.signatureOf(contents.stream().map(ContentResponseDto::id).toList());
 
-        return boardRepository.findActiveByTypeAndSignature(BoardType.AI_RECOMMEND, signature)
+        return boardRepository.findActiveAiBoardBySignature(signature)
                 .map(board -> new BoardWithContentsDto(
                         board.getId(),
                         board.getTitle(),
@@ -415,8 +415,8 @@ public class BoardService {
 
         // 저장된 signature는 콘텐츠 id를 정렬해 만든 값이라, 요청 id로 계산해도 같은 문자열이 나온다.
         // 존재하지 않는 id가 섞여 있으면 어차피 아무 보드와도 매칭되지 않고, 아래 조회에서 걸러진다.
-        Optional<Board> existing = boardRepository.findActiveByTypeAndSignature(
-                BoardType.AI_RECOMMEND, Board.signatureOf(request.contentIds()));
+        Optional<Board> existing = boardRepository.findActiveAiBoardBySignature(
+                Board.signatureOf(request.contentIds()));
         if (existing.isPresent())
         {
             // like()가 이미 멱등하게 처리한다. 이미 누른 상태면 카운트를 올리지 않고 현재 값을 돌려준다.

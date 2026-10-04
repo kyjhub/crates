@@ -66,4 +66,13 @@ create table user_refresh_tokens (
     primary key (id)
 );
 
-create index idx_user_refresh_tokens_expires_at on user_refresh_tokens (expires_at);
+-- 사용자별 토큰. 로그인할 때마다 RefreshTokenService.issue가 "이 사용자의 토큰을 만료순으로, 잠금과 함께"
+-- 읽는다(사용자당 3개 상한을 지키려고 가장 오래된 것을 지운다). 로그아웃은 user_id로 지운다.
+-- user_id 인덱스가 없으면 둘 다 테이블 전체를 훑고, 로그인은 그동안 잠금을 쥔다. 토큰은 사용자당 최대 3개라
+-- 테이블이 사용자 수에 비례해 커지므로 그 비용도 같이 커진다.
+--
+-- 예전에는 (expires_at) 인덱스였다. 하루 1번(새벽 4시) 도는 만료 정리만 도왔고 로그인·로그아웃은 못 썼다.
+-- 같은 개수로 바꾸는 것이라 쓰기 비용은 그대로다. 만료 정리는 이제 전체를 훑지만 하루 1번이다.
+-- (실측 2026-10-01 — 토큰 3,600행/6개월 환경: 로그인 0.4 -> 0.02ms,
+--  토큰 30만 행/사용자 10만 가정: 로그인 6,904블록 13.4ms -> 12블록 0.07ms, 만료 정리 3.5 -> 20.6ms)
+create index idx_user_refresh_tokens_user on user_refresh_tokens (user_id, expires_at);

@@ -16,7 +16,7 @@ import lombok.NoArgsConstructor;
  * 가입 직후 취향 콘텐츠 후보. 사용자는 이 목록에서 1~10개를 골라 첫 취향 벡터를 만든다.
  *
  * <p>콘텐츠 하나는 후보에 한 번만 들어가므로 content_id를 그대로 기본키로 쓴다({@link MapsId}).
- * 행은 시딩(V10__SeedOnboardingContents)만 만든다. 앱은 읽기만 하므로 생성 경로를 두지 않는다.</p>
+ * 행은 시딩(V9__SeedOnboardingContents)만 만든다. 앱은 읽기만 하므로 생성 경로를 두지 않는다.</p>
  */
 @Entity
 @Table(name = "onboarding_content")

@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # 측정용 데이터를 처음부터 다시 만든다. 레포지토리 측정과 API 측정이 같은 스크립트로 같은 데이터를 쓴다.
 #
-#   ./load-test/prepare.sh                          # 기본: 계정 1000 / AI 보드 1만 / 계정당 좋아요 1만 / 사용자 보드 1만
-#   ./load-test/prepare.sh 20 1000 0                # 인자는 seed.sh에 그대로 넘긴다
+#   ./load-test/prepare.sh                 # 기본: 6개월 누적(seed.sh 3 1 0.6 1.0) — 계정 1,200 / 보드 250,800 / 좋아요 342,000
+#   ./load-test/prepare.sh 3 1 0.6 1.2     # 인자는 seed.sh에 그대로 넘긴다(하루 좋아요 / 하루 보드 수정 / 인기 보드 비율 / 지프 s)
 #
-# 정리 → 시딩 → 취향 벡터 재계산 → VACUUM ANALYZE → 통계 초기화. 좋아요 1,000만 건이라 몇 분 걸리므로 측정마다 돌리지 않는다.
+# 정리 → 시딩 → 취향 벡터 재계산 → VACUUM ANALYZE → 통계 초기화. 몇 분 걸리므로 측정마다 돌리지 않는다.
 # 측정 사이의 초기화는 run-measure.sh가 가볍게 한다.
 #
 # 전제: backend가 8080에 떠 있어야 한다. 기준 계정의 취향 벡터를 가입 직후 콘텐츠 선택 API로 만들고(seed.sh),
-# 전원의 취향 벡터를 앱의 재계산으로 맞춘다(lib/recalc-vectors.sh, 약 30분).
+# 전원의 취향 벡터를 앱의 재계산으로 맞춘다(lib/recalc-vectors.sh). 레포지토리 측정만 할 때는 SKIP_RECALC=1.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./crates_server.env; set +a
 
-[ "$#" -gt 0 ] && SEED_ARGS=("$@") || SEED_ARGS=(1000 10000 10000 10000)
+[ "$#" -gt 0 ] && SEED_ARGS=("$@") || SEED_ARGS=(3 1 0.6 1.0)
 
 PSQL_IN="docker exec -i -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server psql -U $POSTGRESQL_USERNAME -d crates"
 PSQL="docker exec -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server psql -U $POSTGRESQL_USERNAME -d crates -t -A"
