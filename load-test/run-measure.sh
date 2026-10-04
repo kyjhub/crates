@@ -22,6 +22,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./crates_server.env; set +a
+. load-test/lib/common.sh
 
 SCENARIO=""; RUNS=3; VACUUM=0
 for arg in "$@"; do
@@ -38,28 +39,6 @@ OUT_DIR="load-test/results/${NAME}-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT_DIR"
 
 PG="docker exec -e PGPASSWORD=$POSTGRESQL_PASSWORD postgres_server psql -U $POSTGRESQL_USERNAME -d crates -t -A -c"
-
-# ── 측정 준비 확인 ─────────────────────────────────────────────
-# health가 200/401을 주는 시점은 시딩 완료가 아니다. Spring Boot는 ApplicationRunner를
-# "Started" 로그 이후에 실행하고 웹 서버는 그보다 먼저 열린다. 그리고 seed completed 로그가
-# 찍힌 뒤에도 Qdrant가 HNSW 인덱스를 백그라운드로 짓는다(실측 35초, CPU 815%).
-wait_ready() {
-    printf '준비 확인: '
-    for _ in $(seq 1 60); do
-        [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health || true)" != "000" ] && break
-        printf '.'; sleep 5
-    done
-    # grep -q를 파이프라인에 쓰면 안 된다. 먼저 종료하면서 docker logs가 SIGPIPE로 죽고,
-    # set -o pipefail이 그것을 실패로 잡아 멀쩡한 상태에서도 여기서 멈춘다.
-    local seeded; seeded=$(docker logs backend_server 2>&1 | grep -c "seed completed" || true)
-    [ "${seeded:-0}" -gt 0 ] || { echo "Qdrant 시딩 로그 없음" >&2; exit 1; }
-    for _ in $(seq 1 60); do
-        cpu=$(docker stats --no-stream --format '{{.CPUPerc}}' qdrant_server | tr -d '%')
-        awk -v c="$cpu" 'BEGIN{exit !(c<20)}' && { echo "완료 (Qdrant ${cpu}%)"; return; }
-        printf '.'; sleep 10
-    done
-    echo "Qdrant가 계속 바쁩니다 (${cpu}%) — 측정을 신뢰할 수 없습니다" >&2; exit 1
-}
 
 # 매 실행의 출발 상태를 같게 만든다.
 reset_data() {
@@ -91,18 +70,6 @@ d = next((v for k, v in m.items() if k.startswith('http_req_duration') and '{' n
 print(f"{m['iterations']['rate']:.1f} {d['p(95)']:.0f} {sys.argv[2]}")
 PY
     if [ -z "$tag" ]; then rm -f "$summary"; fi
-}
-
-# 샘플러 기록에서 회차의 최대값을 뽑는다: "backend postgres qdrant k6 (CPU%) 풀대기"
-peaks() {
-    python3 - "$1" <<'PY'
-import csv, sys
-rows = list(csv.DictReader(open(sys.argv[1])))
-def mx(col):
-    vals = [float(r[col]) for r in rows if r.get(col) not in (None, '')]
-    return f"{max(vals):.0f}" if vals else "-"
-print(mx('backend_cpu'), mx('postgres_cpu'), mx('qdrant_cpu'), mx('k6_cpu'), mx('hikari_pending'))
-PY
 }
 
 wait_ready

@@ -131,3 +131,51 @@ export function archive(token, filter, page, size) {
     tags: { name: 'GET /api/boards/mine' },
   });
 }
+
+// ── 도착률 시나리오용 ─────────────────────────────────────────────
+// 파라미터는 프론트(crates-frontend)가 실제로 보내는 값에 맞춘다. 바뀌면 같이 바꿀 것.
+
+/** 홈 인기 보드. 프론트 POPULAR_BOARD_COUNT = 8. */
+export function popular(token) {
+  return http.get(`${BASE}/api/boards/liked?n=8`, {
+    ...auth(token),
+    tags: { name: 'GET /api/boards/liked' },
+  });
+}
+
+/** 홈 "내 보드" 섹션. 프론트 MY_BOARD_COUNT = 8. 보관함 첫 페이지(20건)와 같은 쿼리다. */
+export function homeMyBoards(token) {
+  return archive(token, 'ALL', 0, 8);
+}
+
+/** 검색 보드. AI 서버 임베딩 → Qdrant 콘텐츠 검색 → 제목 query 매칭. */
+export function searchBoard(token, keyword) {
+  return http.get(`${BASE}/api/search/board?keyword=${encodeURIComponent(keyword)}`, {
+    ...auth(token),
+    tags: { name: 'GET /api/search/board' },
+  });
+}
+
+/** 콘텐츠 제목 검색(보드 수정 화면). 프론트 SEARCH_PAGE_SIZE = 20. pg_trgm 인덱스를 탄다. */
+export function searchContents(token, keyword) {
+  return http.get(`${BASE}/api/contents/search?keyword=${encodeURIComponent(keyword)}&page=0&size=20`, {
+    ...auth(token),
+    tags: { name: 'GET /api/contents/search' },
+  });
+}
+
+/** 콘텐츠 상세. dtype은 BOOK | MOVIE | MUSIC. */
+export function contentDetail(token, dtype, contentId) {
+  return http.get(`${BASE}/api/contents/${dtype}/${contentId}`, {
+    ...auth(token),
+    tags: { name: 'GET /api/contents/{dtype}/{id}' },
+  });
+}
+
+/** 콘텐츠 요약. 상세 시나리오의 setup이 id의 종류(dtype)를 알아낼 때만 쓴다. */
+export function contentSummary(token, contentId) {
+  return http.get(`${BASE}/api/contents/${contentId}`, {
+    ...auth(token),
+    tags: { name: 'setup content summary' },
+  });
+}
