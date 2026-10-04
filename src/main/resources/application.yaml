@@ -1,4 +1,10 @@
 spring:
+  # 요청을 가상 스레드로 처리한다. Qdrant·AI 서버를 기다리는 요청이 플랫폼 스레드(Tomcat 기본 200개)를 붙잡지 않게 하려는 것이다.
+  # Qdrant 호출 상한(QdrantBulkhead)에서 기다리는 동안 플랫폼 스레드가 바닥나 Qdrant를 쓰지 않는 API까지 멈춘 적이 있다
+  # (2026-10-04 부하 측정). DB 커넥션은 여전히 풀(10개)이 상한이다.
+  threads:
+    virtual:
+      enabled: true
   # ✅ 1. PostgreSQL 연결 설정
   datasource:
     url: jdbc:postgresql://localhost:5432/crates
@@ -128,6 +134,13 @@ ai:
       api-key: "" # 로컬 도커는 인증이 없으므로 빈 문자열
       content-collection-name: content_vector
       query-collection-name: query_vector
+      # Qdrant 호출(검색 + 벡터 조회) 동시 실행 상한(QdrantBulkhead). 추천 1건이 검색을 최대 5번 해서, 상한이 없으면
+      # 몰릴 때 수십 개가 Qdrant 코어에 한꺼번에 몰려 모두 늦게 끝난다. 넘치면 기다린다(제목 매칭은 포기할 수 없다).
+      #   max-concurrent   부하 측정으로 정한다. 부하 측정은 환경변수(QDRANT_BULKHEAD)로 바꿔 가며 잰다
+      #   acquire-timeout  이만큼 기다려도 자리가 없으면 오류. 이미 응답 목표(500ms)를 한참 넘긴 상태다
+      bulkhead:
+        max-concurrent: 16
+        acquire-timeout: 3s
       # 추천·검색 보드 제목은 콘텐츠 평균 벡터와 가장 가까운 query다(BoardTitleService). 대신 쓸 고정 제목은 없다.
       # 실제 query 데이터(AI 개발자가 적재)가 들어오기 전까지 콘텐츠 벡터를 복제한 임시 query를 넣는다
       # (QueryVectorStubLoader). 실제 데이터가 들어오면 query-stub.enabled를 false로 바꾼다.

@@ -49,6 +49,7 @@ public class QdrantPointOperations {
     private static final int RETRIEVE_CHUNK_SIZE = 1000;
 
     private final QdrantClient qdrantClient;
+    private final QdrantBulkhead bulkhead;
 
     /**
      * 컬렉션이 없으면 지정한 차원과 Cosine 거리 방식으로 생성하고,
@@ -140,9 +141,11 @@ public class QdrantPointOperations {
     private void collectVectors(String collectionName,
                                 List<Points.PointId> chunk,
                                 Map<Long, float[]> into) {
-        List<Points.RetrievedPoint> points = await(
+        // 재계산의 벡터 조회도 검색과 같은 상한 안에서 돈다(QdrantBulkhead). 묶지 않으면 검색만 줄을 서고
+        // 조회가 Qdrant를 더 가져간다. 1,000개 묶음마다 자리를 따로 잡는다.
+        List<Points.RetrievedPoint> points = bulkhead.run(() -> await(
                 qdrantClient.retrieveAsync(collectionName, chunk, false, true, null)
-        );
+        ));
 
         for (Points.RetrievedPoint point : points) {
             Points.PointId pointId = point.getId();
@@ -244,7 +247,8 @@ public class QdrantPointOperations {
                 .setWithVectors(WithVectorsSelectorFactory.enable(withVectors))
                 .build();
 
-        return await(qdrantClient.searchAsync(request))
+        // 동시 호출 수에 상한을 둔다. 넘치면 자리가 날 때까지 기다린다(QdrantBulkhead).
+        return bulkhead.run(() -> await(qdrantClient.searchAsync(request)))
                 .stream()
                 .map(this::toResult)
                 .toList();
