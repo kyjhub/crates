@@ -44,6 +44,37 @@ public class BoardTitleService {
                         "보드 제목으로 쓸 query를 찾지 못했습니다. query_vector 적재 상태를 확인하세요."));
     }
 
+    /**
+     * 보드 여러 개의 제목을 한 번의 Qdrant 요청(묶음 검색)으로 정한다. 결과는 입력 순서와 같다.
+     *
+     * <p>보드마다 <b>자기</b> 콘텐츠 평균 벡터로 따로 검색한다 — 여러 보드의 평균을 다시 평균 내지 않는다.
+     * 그래서 titleFor를 보드마다 부른 것과 제목이 같고, Qdrant 왕복만 보드 수만큼에서 1번으로 준다.</p>
+     *
+     * @throws IllegalStateException 어느 보드든 벡터가 없거나 query를 찾지 못했을 때(titleFor와 같다)
+     */
+    public List<String> titlesFor(List<List<float[]>> contentVectorsPerBoard)
+    {
+        if (contentVectorsPerBoard.isEmpty())
+        {
+            return List.of();
+        }
+
+        List<float[]> means = contentVectorsPerBoard.stream()
+                .map(vectors -> {
+                    if (vectors.isEmpty())
+                    {
+                        throw new IllegalStateException("보드 제목을 정할 콘텐츠 벡터가 없습니다. content_vector 적재 상태를 확인하세요.");
+                    }
+                    return mean(vectors);
+                })
+                .toList();
+
+        return queryVectorService.findMostSimilarQueries(means).stream()
+                .map(match -> match.map(QueryMatch::queryText).orElseThrow(() -> new IllegalStateException(
+                        "보드 제목으로 쓸 query를 찾지 못했습니다. query_vector 적재 상태를 확인하세요.")))
+                .toList();
+    }
+
     private float[] mean(List<float[]> vectors)
     {
         float[] sum = new float[vectors.getFirst().length];

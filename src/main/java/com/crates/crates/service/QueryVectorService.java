@@ -2,6 +2,7 @@ package com.crates.crates.service;
 
 import com.crates.crates.qdrant.PointRecord;
 import com.crates.crates.qdrant.QdrantPointOperations;
+import com.crates.crates.qdrant.ScoredPointResult;
 import com.crates.crates.qdrant.VectorPayload;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -52,6 +53,21 @@ public class QueryVectorService {
                 VectorPayload.MODEL_VERSION,
                 VectorPayload.requireModelVersion(record.modelVersion(), "queryId " + record.queryId())
         );
+    }
+
+    /**
+     * 기준 벡터마다 가장 가까운 query를 한 번의 Qdrant 요청으로 찾는다. 결과는 입력 순서와 같고,
+     * 찾지 못한 자리는 빈 Optional이다. 벡터마다 따로 검색하므로 findMostSimilarQuery를 여러 번 부른 것과 결과가 같다.
+     */
+    public List<Optional<QueryMatch>> findMostSimilarQueries(List<float[]> targetVectors) {
+        return pointOperations.searchBatch(collectionName, targetVectors, 1)
+                .stream()
+                .map(results -> results.stream().findFirst().map(this::toMatch))
+                .toList();
+    }
+
+    private QueryMatch toMatch(ScoredPointResult result) {
+        return new QueryMatch(result.id(), (String) result.payload().get(VectorPayload.QUERY), result.score());
     }
 
     public Optional<QueryMatch> findMostSimilarQuery(float[] targetVector) {

@@ -54,20 +54,35 @@ public class RecommendationService {
                 userVectorService.getVector(userId), Board.ITEMS_PER_BOARD * RECOMMENDED_BOARD_COUNT);
         List<ContentResponseDto> contents = similar.contents();
 
-        List<BoardWithContentsDto> boards = new ArrayList<>(RECOMMENDED_BOARD_COUNT);
+        // 8건을 못 채우는 나머지는 버린다. 모자란 보드는 좋아요를 눌러도 저장이 거절된다.
+        // subList는 원본을 들여다보는 뷰라, 응답에 그대로 담지 않고 복사한다.
+        List<List<ContentResponseDto>> slices = new ArrayList<>(RECOMMENDED_BOARD_COUNT);
         for (int from = 0; from + Board.ITEMS_PER_BOARD <= contents.size(); from += Board.ITEMS_PER_BOARD)
         {
-            // 8건을 못 채우는 나머지는 버린다. 모자란 보드는 좋아요를 눌러도 저장이 거절된다.
-            // subList는 원본을 들여다보는 뷰라, 응답에 그대로 담지 않고 복사한다.
-            List<ContentResponseDto> slice =
-                    List.copyOf(contents.subList(from, from + Board.ITEMS_PER_BOARD));
+            slices.add(List.copyOf(contents.subList(from, from + Board.ITEMS_PER_BOARD)));
+        }
 
-            // 같은 구성의 보드가 이미 저장돼 있으면 저장된 제목을 쓰므로, query 매칭은 미저장일 때만 한다.
-            // 매칭(Qdrant 검색)은 트랜잭션 밖인 여기서 한다. BoardService 안에서 하면 커넥션을 쥐고 기다린다.
-            // 제목은 보드 콘텐츠의 평균 벡터와 가장 가까운 query다(BoardTitleService).
-            boards.add(boardService.findSavedGeneratedBoard(slice, userId)
-                    .orElseGet(() -> BoardWithContentsDto.unsaved(
-                            boardTitleService.titleFor(similar.vectorsOf(slice)), slice)));
+        // 같은 구성의 보드가 이미 저장돼 있으면 저장된 제목을 쓴다(PostgreSQL). query 매칭은 저장 안 된 보드만 한다.
+        List<BoardWithContentsDto> boards = new ArrayList<>(slices.size());
+        List<Integer> unsavedIndexes = new ArrayList<>();
+        for (List<ContentResponseDto> slice : slices)
+        {
+            BoardWithContentsDto saved = boardService.findSavedGeneratedBoard(slice, userId).orElse(null);
+            if (saved == null)
+            {
+                unsavedIndexes.add(boards.size());
+            }
+            boards.add(saved);
+        }
+
+        // 저장 안 된 보드들의 제목을 한 번의 묶음 검색으로 정한다. 보드마다 자기 평균 벡터로 따로 검색된다.
+        // 매칭(Qdrant 검색)은 트랜잭션 밖인 여기서 한다. BoardService 안에서 하면 커넥션을 쥐고 기다린다.
+        List<String> titles = boardTitleService.titlesFor(
+                unsavedIndexes.stream().map(index -> similar.vectorsOf(slices.get(index))).toList());
+        for (int i = 0; i < unsavedIndexes.size(); i++)
+        {
+            int index = unsavedIndexes.get(i);
+            boards.set(index, BoardWithContentsDto.unsaved(titles.get(i), slices.get(index)));
         }
 
         return boards;
