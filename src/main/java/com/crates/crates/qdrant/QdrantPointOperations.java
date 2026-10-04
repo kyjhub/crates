@@ -254,6 +254,32 @@ public class QdrantPointOperations {
                 .toList();
     }
 
+    /**
+     * 기준 벡터 여러 개를 한 번의 요청으로 검색한다. 결과는 입력 순서대로, 기준 벡터마다 따로 돌아온다.
+     *
+     * <p>추천 보드 4개의 제목을 정할 때 쓴다. 보드마다 자기 평균 벡터로 검색되므로 따로 4번 보낸 것과 결과가 같고,
+     * Qdrant 왕복만 4번에서 1번으로 준다. 상한(QdrantBulkhead)도 묶음 전체가 자리 하나를 쓴다.</p>
+     */
+    public List<List<ScoredPointResult>> searchBatch(String collectionName, List<float[]> queryVectors, int topK) {
+        if (queryVectors.isEmpty()) {
+            return List.of();
+        }
+
+        List<Points.SearchPoints> requests = queryVectors.stream()
+                .map(vector -> Points.SearchPoints.newBuilder()
+                        .setCollectionName(collectionName)
+                        .addAllVector(toFloatList(vector))
+                        .setLimit(topK)
+                        .setWithPayload(WithPayloadSelectorFactory.enable(true))
+                        .build())
+                .toList();
+
+        return bulkhead.run(() -> await(qdrantClient.searchBatchAsync(collectionName, requests, null)))
+                .stream()
+                .map(batch -> batch.getResultList().stream().map(this::toResult).toList())
+                .toList();
+    }
+
     private Points.PointStruct toPointStruct(PointRecord point) {
         return Points.PointStruct.newBuilder()
                 .setId(PointIdFactory.id(point.id()))
