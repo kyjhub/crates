@@ -4,9 +4,11 @@ import com.crates.crates.entity.user.UserVector;
 import com.crates.crates.enumData.Rating;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -43,5 +45,19 @@ public interface UserVectorRepository extends JpaRepository<UserVector, Long> {
     List<Long> findStaleUserIds(@Param("rating") Rating rating,
                                 @Param("before") LocalDateTime before,
                                 Pageable pageable);
+
+    /**
+     * 다시 계산한 취향 벡터를 저장한다. 재계산(UserVectorService.recalculateFor)만 쓴다.
+     *
+     * <p>엔티티를 읽어 고치는 대신 UPDATE 한 번으로 쓰는 이유: 재계산은 Qdrant를 기다리는 동안 DB 커넥션을
+     * 쥐지 않으려고 트랜잭션 밖에서 돈다. 그래서 앞에서 읽은 엔티티는 영속성 컨텍스트에 없고, 고쳐도 반영되지
+     * 않는다. 이 쿼리가 자기 트랜잭션을 짧게 열고 바로 닫는다.</p>
+     */
+    @Transactional
+    @Modifying
+    @Query("UPDATE UserVector uv SET uv.userVector = :vector, uv.updatedAt = :updatedAt WHERE uv.userId = :userId")
+    int updateVector(@Param("userId") Long userId,
+                     @Param("vector") float[] vector,
+                     @Param("updatedAt") LocalDateTime updatedAt);
 
 }

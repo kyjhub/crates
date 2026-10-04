@@ -77,9 +77,9 @@ public class UserVectorBackfillService {
      * 밀린 사용자를 찾아 재계산한다.
      *
      * <p><b>이 메서드에 {@code @Transactional}을 붙이면 안 된다.</b> 붙이면 아래 루프가 하나의
-     * 트랜잭션이 되고, {@code recalculateFor}(REQUIRED)가 거기 합류한다. 그러면 한 사용자에서
-     * 난 예외가 배치 전체를 롤백시켜 <b>앞서 고친 것까지 되돌린다.</b> 트랜잭션 경계는 사용자
-     * 한 명이어야 한다.</p>
+     * 트랜잭션이 되고 Qdrant를 기다리는 내내 커넥션을 쥔다. {@code recalculateFor}는 트랜잭션 밖에서 돌고
+     * 저장만 UPDATE 한 번으로 짧게 하도록 만들어져 있다(NOT_SUPPORTED라 바깥 트랜잭션은 잠시 멈춘다).
+     * 사용자 한 명의 실패가 다른 사용자의 저장을 되돌리지 않는다.</p>
      *
      * <p>사용자마다 예외를 잡고 계속 간다. 한 명이 망가졌다고 나머지를 포기할 이유가 없다.</p>
      *
@@ -110,7 +110,7 @@ public class UserVectorBackfillService {
         int repaired = 0;
         for (Long userId : staleUserIds) {
             try {
-                // 다른 빈을 거치므로 프록시가 살아 있다. 사용자 한 명이 트랜잭션 하나다.
+                // 다른 빈을 거치므로 프록시가 살아 있다. 저장은 사용자 한 명마다 따로 커밋된다.
                 userVectorService.recalculateFor(userId);
                 metrics.recordBackfill(true);
                 repaired++;

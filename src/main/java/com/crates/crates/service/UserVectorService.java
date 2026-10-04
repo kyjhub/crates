@@ -15,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
@@ -170,11 +171,21 @@ public class UserVectorService {
      * 가중치를 날짜 순위만으로 통제한다(averageOf 참고). <b>바깥쪽</b>은 순위에 영향이 없고
      * (Qdrant가 질의 벡터를 정규화한다) 저장값의 크기를 1로 고정해 로그와 모니터링에서
      * 이상값을 알아보기 쉽게 하려는 것이다.</p>
+     *
+     * <p><b>트랜잭션 밖에서 돈다(NOT_SUPPORTED).</b> 재계산 시간의 대부분은 Qdrant에서 콘텐츠 벡터를 받는
+     * 시간이다. 트랜잭션 안에서 돌면 그동안 DB 커넥션을 쥐고 있어, 재계산이 몰리면 커넥션 풀(10개)을
+     * 다 차지하고 다른 API가 커넥션을 기다렸다(2026-10-04 부하 측정: 좋아요 초당 5쌍에서 풀 대기 15).
+     * 그래서 DB 조회는 저장소 호출마다 짧게 끝내고, 저장은 UPDATE 한 번으로 따로 한다. 조회 사이에
+     * 좋아요가 바뀌어도 괜찮다 — 그 좋아요가 재계산을 다시 요청한다(UserVectorRecalculationQueue).</p>
+     *
+     * <p><b>updatedAt은 계산을 시작한 시각이다.</b> 백필은 "updatedAt보다 나중 좋아요가 있는 사용자"를
+     * 밀린 것으로 본다. 끝난 시각을 넣으면 계산하는 사이에 들어온 좋아요가 반영된 것처럼 보인다.</p>
      */
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void recalculateFor(Long userId)
     {
         Timer.Sample sample = metrics.startRecalculation();
+        LocalDateTime startedAt = LocalDateTime.now();
 
         List<LikedBoardDto> liked = boardFeedbackRepository.findLikedBoardsWithTime(userId, Rating.LIKE);
         // 비용이 이 값에 비례하므로 소요 시간과 함께 봐야 해석이 된다.
@@ -202,7 +213,7 @@ public class UserVectorService {
             return;
         }
 
-        stored.updateVector(recalculated, LocalDateTime.now());
+        userVectorRepository.updateVector(userId, recalculated, startedAt);
         metrics.recordRecalculation(sample, UserVectorMetrics.Result.UPDATED);
     }
 

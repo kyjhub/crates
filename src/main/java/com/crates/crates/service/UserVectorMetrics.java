@@ -117,10 +117,9 @@ public class UserVectorMetrics {
     /**
      * 재계산 실패 1건.
      *
-     * <p>세는 범위가 제한적이다. 리스너의 try/catch가 잡는 것, 즉 <b>메서드 본문에서 난 예외</b>만
-     * 센다. {@code @Transactional} 커밋은 본문이 끝난 뒤 인터셉터에서 일어나므로, 커밋 단계에서
-     * 터진 예외는 여기 잡히지 않고 {@code AsyncUncaughtExceptionHandler}로 빠져 로그만 남는다.
-     * 그 경우도 STALE_USERS에는 반드시 잡히므로, 두 지표를 함께 봐야 한다.</p>
+     * <p>재계산 대기열(UserVectorRecalculationQueue)의 try/catch가 잡은 예외를 센다. 재계산은 트랜잭션 밖에서
+     * 돌고 저장도 UPDATE 한 번이라 저장 실패까지 여기 잡힌다. 백필이 고친 실패는 {@code backfill} 카운터에 따로
+     * 남으므로 STALE_USERS와 함께 봐야 한다.</p>
      */
     public void recordFailure()
     {

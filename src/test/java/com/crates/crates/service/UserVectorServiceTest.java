@@ -139,13 +139,13 @@ class UserVectorServiceTest {
         @Test
         void recomputesFromSelectedContentsWhenLikesDropToZero()
         {
-            UserVector stored = stored(axis(5), List.of(1L));
+            stored(axis(5), List.of(1L));
             when(boardFeedbackRepository.findLikedBoardsWithTime(USER_ID, Rating.LIKE)).thenReturn(List.of());
             when(contentVectorService.findVectors(List.of(1L))).thenReturn(Map.of(1L, axis(0)));
 
             service.recalculateFor(USER_ID);
 
-            assertArrayEquals(axis(0), stored.getUserVector());
+            assertArrayEquals(axis(0), savedVector());
             verify(metrics).recordRecalculation(any(), eq(UserVectorMetrics.Result.UPDATED));
         }
 
@@ -156,13 +156,13 @@ class UserVectorServiceTest {
         @Test
         void selectedContentsAreWeightedOneRankAfterTheOldestLikeDay()
         {
-            UserVector stored = stored(axis(5), List.of(1L));
+            stored(axis(5), List.of(1L));
             likedBoardOf(10L, LocalDateTime.of(2026, 9, 20, 10, 0), 100L,
                     Map.of(100L, axis(1), 1L, axis(0)));
 
             service.recalculateFor(USER_ID);
 
-            float[] vector = stored.getUserVector();
+            float[] vector = savedVector();
             double norm = Math.sqrt(1 + 0.75 * 0.75);
             assertEquals(1.0 / norm, vector[1], 1e-6);
             assertEquals(0.75 / norm, vector[0], 1e-6);
@@ -174,12 +174,12 @@ class UserVectorServiceTest {
         @Test
         void rowsWithoutSelectedContentsUseLikesOnly()
         {
-            UserVector stored = stored(axis(5), List.of());
+            stored(axis(5), List.of());
             likedBoardOf(10L, LocalDateTime.of(2026, 9, 20, 10, 0), 100L, Map.of(100L, axis(1)));
 
             service.recalculateFor(USER_ID);
 
-            assertArrayEquals(axis(1), stored.getUserVector());
+            assertArrayEquals(axis(1), savedVector());
         }
 
         /** Qdrant 조회가 깨졌을 가능성이 커서, 가입 벡터로 되돌리면 좋아요 이력이 조용히 사라진다. */
@@ -197,6 +197,7 @@ class UserVectorServiceTest {
             service.recalculateFor(USER_ID);
 
             assertSame(before, stored.getUserVector());
+            verify(userVectorRepository, never()).updateVector(any(), any(), any());
             verify(metrics).recordRecalculation(any(), eq(UserVectorMetrics.Result.UNCHANGED));
         }
     }
@@ -226,6 +227,16 @@ class UserVectorServiceTest {
                 .build();
         when(userVectorRepository.findById(USER_ID)).thenReturn(Optional.of(stored));
         return stored;
+    }
+
+    /**
+     * 재계산이 저장한 벡터. 재계산은 트랜잭션 밖에서 돌아 엔티티를 고치지 않고 UPDATE 한 번으로 저장한다.
+     */
+    private float[] savedVector()
+    {
+        ArgumentCaptor<float[]> vector = ArgumentCaptor.forClass(float[].class);
+        verify(userVectorRepository).updateVector(eq(USER_ID), vector.capture(), any());
+        return vector.getValue();
     }
 
     private void likedBoardOf(Long boardId, LocalDateTime likedAt, Long contentId, Map<Long, float[]> vectors)
