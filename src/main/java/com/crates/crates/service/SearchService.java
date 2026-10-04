@@ -18,6 +18,7 @@ public class SearchService {
     private final EmbeddingClient embeddingClient;
     private final RecommendationService recommendationService;
     private final BoardService boardService;
+    private final BoardTitleService boardTitleService;
 
     /**
      * 검색어를 AI 서버에서 임베딩 벡터로 바꾼다. 벡터 자체는 프론트로 내려주지 않고 내부 조회에만 쓴다.
@@ -43,8 +44,9 @@ public class SearchService {
     public BoardWithContentsDto searchBoard(String keyword, Long userId)
     {
         float[] queryVector = getQueryVector(keyword);
-        List<ContentResponseDto> contents =
-                recommendationService.recommendByVector(queryVector, Board.ITEMS_PER_BOARD);
+        RecommendationService.SimilarContents similar =
+                recommendationService.findSimilar(queryVector, Board.ITEMS_PER_BOARD);
+        List<ContentResponseDto> contents = similar.contents();
 
         if (contents.size() < Board.ITEMS_PER_BOARD)
         {
@@ -54,12 +56,10 @@ public class SearchService {
                     keyword, contents.size());
         }
 
-        return boardService.resolveGeneratedBoard(buildTitle(keyword), contents, userId);
-    }
-
-    // 프론트는 좋아요 시 이 제목을 그대로 돌려주므로, 저장된 뒤에도 읽히는 이름이어야 한다.
-    private String buildTitle(String keyword)
-    {
-        return "'" + keyword + "' 검색 결과";
+        // 제목 매칭(Qdrant 검색)은 트랜잭션 밖인 여기서 한다. BoardService 안에서 하면 커넥션을 쥐고 기다린다.
+        // 제목은 검색어가 아니라 결과 콘텐츠의 평균 벡터와 가장 가까운 query다(추천 보드와 같은 규칙).
+        return boardService.findSavedGeneratedBoard(contents, userId)
+                .orElseGet(() -> BoardWithContentsDto.unsaved(
+                        boardTitleService.titleFor(similar.vectorsOf(contents)), contents));
     }
 }

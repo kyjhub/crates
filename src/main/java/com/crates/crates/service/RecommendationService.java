@@ -9,6 +9,8 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 @Slf4j
 @Service
@@ -18,19 +20,24 @@ public class RecommendationService {
     /** 홈 화면에 한 줄로 보여줄 추천 보드 수. 스크롤 없이 4개만 노출한다. */
     private static final int RECOMMENDED_BOARD_COUNT = 4;
 
-    /**
-     * "오늘의 추천 보드"의 임시 제목.
-     *
-     * <p>최종적으로는 보드 콘텐츠의 평균 벡터와 가장 가까운 query가 제목이 된다.
-     * Qdrant의 query_vector 컬렉션이 아직 비어 있어 그 전까지 쓰는 값이다.
-     * (docs/board-schema.md 4장)</p>
-     */
-    private static final String RECOMMENDATION_TITLE = "오늘의 추천 보드";
-
     private final UserVectorService userVectorService;
     private final ContentVectorService contentVectorService;
     private final ContentService contentService;
     private final BoardService boardService;
+    private final BoardTitleService boardTitleService;
+
+    /** 유사도 순으로 고른 콘텐츠와 그 벡터. 벡터는 보드 제목을 정할 때 쓴다. */
+    public record SimilarContents(List<ContentResponseDto> contents, Map<Long, float[]> vectorById) {
+
+        /** slice에 담긴 콘텐츠의 벡터. Qdrant 응답에 없던 id는 빠진다. */
+        public List<float[]> vectorsOf(List<ContentResponseDto> slice)
+        {
+            return slice.stream()
+                    .map(content -> vectorById.get(content.id()))
+                    .filter(Objects::nonNull)
+                    .toList();
+        }
+    }
 
     /**
      * 사용자 취향 벡터와 가까운 콘텐츠로 보드 한 장을 만든다.
@@ -43,8 +50,9 @@ public class RecommendationService {
     {
         // 유사도 상위 32건을 받아 8건씩 끊어 4개 보드로 만든다.
         // 앞쪽 보드일수록 취향에 가깝다.
-        List<ContentResponseDto> contents =
-                recommend(userId, Board.ITEMS_PER_BOARD * RECOMMENDED_BOARD_COUNT);
+        SimilarContents similar = findSimilar(
+                userVectorService.getVector(userId), Board.ITEMS_PER_BOARD * RECOMMENDED_BOARD_COUNT);
+        List<ContentResponseDto> contents = similar.contents();
 
         List<BoardWithContentsDto> boards = new ArrayList<>(RECOMMENDED_BOARD_COUNT);
         for (int from = 0; from + Board.ITEMS_PER_BOARD <= contents.size(); from += Board.ITEMS_PER_BOARD)
@@ -54,37 +62,19 @@ public class RecommendationService {
             List<ContentResponseDto> slice =
                     List.copyOf(contents.subList(from, from + Board.ITEMS_PER_BOARD));
 
-            boards.add(boardService.resolveGeneratedBoard(titleFor(boards.size()), slice, userId));
+            // 같은 구성의 보드가 이미 저장돼 있으면 저장된 제목을 쓰므로, query 매칭은 미저장일 때만 한다.
+            // 매칭(Qdrant 검색)은 트랜잭션 밖인 여기서 한다. BoardService 안에서 하면 커넥션을 쥐고 기다린다.
+            // 제목은 보드 콘텐츠의 평균 벡터와 가장 가까운 query다(BoardTitleService).
+            boards.add(boardService.findSavedGeneratedBoard(slice, userId)
+                    .orElseGet(() -> BoardWithContentsDto.unsaved(
+                            boardTitleService.titleFor(similar.vectorsOf(slice)), slice)));
         }
 
         return boards;
     }
 
     /**
-     * 보드가 여러 개라 제목이 겹치지 않게 번호를 붙인다.
-     *
-     * <p>7단계에서 콘텐츠 평균 벡터와 가장 가까운 query로 대체될 임시 규칙이다.
-     * 좋아요를 눌러 저장된 보드의 제목은 그 시점 값으로 고정되므로, 이미 저장된 보드는
-     * 나중에도 이 번호 제목을 유지한다.</p>
-     */
-    private String titleFor(int index)
-    {
-        return RECOMMENDATION_TITLE + " " + (index + 1);
-    }
-
-    /**
-     * 사용자 취향 벡터 기반 추천.
-     *
-     * <p>벡터가 비어 있는 경우를 따로 다루지 않는다. 가입 시점에 L2 정규화된 랜덤 벡터가 들어가고
-     * 좋아요가 생기면 그 집합에서 다시 계산되므로, 언제 조회하든 Cosine 검색에 쓸 수 있는 값이 있다.</p>
-     */
-    public List<ContentResponseDto> recommend(Long userId, int topN)
-    {
-        return recommendByVector(userVectorService.getVector(userId), topN);
-    }
-
-    /**
-     * 기준 벡터와 가까운 콘텐츠 요약을 유사도 높은 순으로 돌려준다.
+     * 기준 벡터와 가까운 콘텐츠 요약과 벡터를 유사도 높은 순으로 돌려준다.
      *
      * <p>사용자 취향 벡터와 검색어 벡터가 같은 임베딩 공간에 있으므로 조회 경로를 공유한다.
      * 호출하는 쪽은 벡터의 출처를 신경 쓰지 않는다.</p>
@@ -92,10 +82,10 @@ public class RecommendationService {
      * <p>Qdrant가 매긴 순위는 getContentSummaries가 입력 순서를 유지해주므로 그대로 보존된다.
      * Qdrant에는 남아 있지만 RDB에서 사라진 콘텐츠도 거기서 함께 걸러진다.</p>
      */
-    public List<ContentResponseDto> recommendByVector(float[] targetVector, int topN)
+    public SimilarContents findSimilar(float[] targetVector, int topN)
     {
-        List<Long> similarContentIds = contentVectorService.findSimilarContentIds(targetVector, topN);
+        Map<Long, float[]> vectorById = contentVectorService.findSimilar(targetVector, topN);
 
-        return contentService.getContentSummaries(similarContentIds);
+        return new SimilarContents(contentService.getContentSummaries(List.copyOf(vectorById.keySet())), vectorById);
     }
 }

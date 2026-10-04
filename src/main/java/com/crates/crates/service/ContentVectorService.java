@@ -9,8 +9,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 @Service
 @RequiredArgsConstructor
@@ -79,10 +81,22 @@ public class ContentVectorService {
         return pointOperations.retrieveVectors(collectionName, contentIds);
     }
 
-    public List<Long> findSimilarContentIds(float[] targetVector, int topK) {
-        return pointOperations.search(collectionName, targetVector, topK)
-                .stream()
-                .map(ScoredPointResult::id)
-                .toList();
+    /** 컬렉션의 모든 콘텐츠 벡터를 1,000개씩 넘겨준다. 부하 측정용 임시 query 벡터를 만들 때 쓴다. */
+    public void forEachVectorPage(Consumer<Map<Long, float[]>> pageAction) {
+        pointOperations.scrollVectors(collectionName, pageAction);
+    }
+
+    /**
+     * 기준 벡터와 가까운 콘텐츠의 id와 벡터를 유사도 높은 순으로 돌려준다.
+     *
+     * <p>벡터를 함께 받는 이유는 보드 제목 때문이다. 제목은 보드에 담긴 콘텐츠의 평균 벡터와 가장 가까운
+     * query로 정하는데, 따로 retrieve하면 Qdrant 왕복이 한 번 늘어난다.</p>
+     */
+    public Map<Long, float[]> findSimilar(float[] targetVector, int topK) {
+        Map<Long, float[]> vectorById = new LinkedHashMap<>();
+        for (ScoredPointResult result : pointOperations.search(collectionName, targetVector, topK, true)) {
+            vectorById.put(result.id(), result.vector());
+        }
+        return vectorById;
     }
 }

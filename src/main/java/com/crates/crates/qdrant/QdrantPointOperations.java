@@ -6,6 +6,7 @@ import io.qdrant.client.QdrantClient;
 import io.qdrant.client.ValueFactory;
 import io.qdrant.client.VectorsFactory;
 import io.qdrant.client.WithPayloadSelectorFactory;
+import io.qdrant.client.WithVectorsSelectorFactory;
 import io.qdrant.client.grpc.Collections;
 import io.qdrant.client.grpc.JsonWithInt;
 import io.qdrant.client.grpc.Points;
@@ -17,6 +18,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
+import java.util.function.Consumer;
 
 @Component
 @RequiredArgsConstructor
@@ -152,6 +154,39 @@ public class QdrantPointOperations {
     }
 
     /**
+     * 컬렉션의 모든 point 벡터를 {@link #RETRIEVE_CHUNK_SIZE}개씩 넘겨준다.
+     *
+     * <p>한 페이지씩 받아 바로 넘기므로 컬렉션 전체를 메모리에 올리지 않는다.
+     * 페이지 크기는 retrieve와 같은 이유(gRPC 수신 한도 4MB)로 정했다.</p>
+     */
+    public void scrollVectors(String collectionName, Consumer<Map<Long, float[]>> pageAction) {
+        Points.PointId offset = null;
+        do {
+            Points.ScrollPoints.Builder request = Points.ScrollPoints.newBuilder()
+                    .setCollectionName(collectionName)
+                    .setLimit(RETRIEVE_CHUNK_SIZE)
+                    .setWithPayload(WithPayloadSelectorFactory.enable(false))
+                    .setWithVectors(WithVectorsSelectorFactory.enable(true));
+            if (offset != null) {
+                request.setOffset(offset);
+            }
+
+            Points.ScrollResponse response = await(qdrantClient.scrollAsync(request.build()));
+            Map<Long, float[]> page = new HashMap<>(response.getResultCount());
+            for (Points.RetrievedPoint point : response.getResultList()) {
+                Points.PointId pointId = point.getId();
+                if (pointId.getPointIdOptionsCase() != Points.PointId.PointIdOptionsCase.NUM) {
+                    throw new IllegalStateException("Qdrant point id is not numeric.");
+                }
+                page.put(pointId.getNum(), toFloatArray(point.getVectors().getVector()));
+            }
+            pageAction.accept(page);
+
+            offset = response.hasNextPageOffset() ? response.getNextPageOffset() : null;
+        } while (offset != null);
+    }
+
+    /**
      * 조회 응답의 dense 벡터를 float 배열로 꺼낸다.
      *
      * <p>두 자리를 모두 본다. Qdrant는 조회 응답에서 dense 벡터를 {@code VectorOutput.dense}
@@ -191,11 +226,22 @@ public class QdrantPointOperations {
     }
 
     public List<ScoredPointResult> search(String collectionName, float[] queryVector, int topK) {
+        return search(collectionName, queryVector, topK, false);
+    }
+
+    /**
+     * withVectors가 true면 결과에 point의 벡터도 담는다.
+     *
+     * <p>보드 제목을 정하려면 고른 콘텐츠의 평균 벡터가 필요하다. 검색과 따로 retrieve하면 왕복이
+     * 한 번 늘어나므로 검색 응답에 함께 싣는다. topK가 수십 건이라 gRPC 수신 한도와는 거리가 멀다.</p>
+     */
+    public List<ScoredPointResult> search(String collectionName, float[] queryVector, int topK, boolean withVectors) {
         Points.SearchPoints request = Points.SearchPoints.newBuilder()
                 .setCollectionName(collectionName)
                 .addAllVector(toFloatList(queryVector))
                 .setLimit(topK)
                 .setWithPayload(WithPayloadSelectorFactory.enable(true))
+                .setWithVectors(WithVectorsSelectorFactory.enable(withVectors))
                 .build();
 
         return await(qdrantClient.searchAsync(request))
@@ -216,7 +262,8 @@ public class QdrantPointOperations {
         return new ScoredPointResult(
                 extractNumericId(point),
                 point.getScore(),
-                toJavaPayload(point.getPayloadMap())
+                toJavaPayload(point.getPayloadMap()),
+                toFloatArray(point.getVectors().getVector())
         );
     }
 
