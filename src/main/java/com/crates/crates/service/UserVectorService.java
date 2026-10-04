@@ -84,6 +84,18 @@ public class UserVectorService {
                 .orElseThrow(() -> new BusinessException("취향 콘텐츠를 먼저 선택해주세요."));
     }
 
+    /** 추천에 쓸 벡터와 그 버전(마지막 재계산 시작 시각). 버전은 추천 캐시가 낡았는지 가르는 데 쓴다. */
+    public record VectorSnapshot(float[] vector, String version) {
+    }
+
+    /** 추천에 쓸 벡터와 버전. 버전이 같으면 같은 벡터다 — 벡터는 재계산 때만 바뀌고 그때 updated_at도 바뀐다. */
+    public VectorSnapshot getSnapshot(Long userId)
+    {
+        return userVectorRepository.findById(userId)
+                .map(stored -> new VectorSnapshot(stored.getUserVector(), String.valueOf(stored.getUpdatedAt())))
+                .orElseThrow(() -> new BusinessException("취향 콘텐츠를 먼저 선택해주세요."));
+    }
+
     /** 가입 때 콘텐츠를 골랐는지. 고르기 전에는 행이 없다. */
     public boolean hasVector(Long userId)
     {
