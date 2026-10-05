@@ -49,7 +49,6 @@ public class QdrantPointOperations {
     private static final int RETRIEVE_CHUNK_SIZE = 1000;
 
     private final QdrantClient qdrantClient;
-    private final QdrantBulkhead bulkhead;
 
     /**
      * 컬렉션이 없으면 지정한 차원과 Cosine 거리 방식으로 생성하고,
@@ -141,11 +140,9 @@ public class QdrantPointOperations {
     private void collectVectors(String collectionName,
                                 List<Points.PointId> chunk,
                                 Map<Long, float[]> into) {
-        // 재계산의 벡터 조회도 검색과 같은 상한 안에서 돈다(QdrantBulkhead). 묶지 않으면 검색만 줄을 서고
-        // 조회가 Qdrant를 더 가져간다. 1,000개 묶음마다 자리를 따로 잡는다.
-        List<Points.RetrievedPoint> points = bulkhead.run(() -> await(
+        List<Points.RetrievedPoint> points = await(
                 qdrantClient.retrieveAsync(collectionName, chunk, false, true, null)
-        ));
+        );
 
         for (Points.RetrievedPoint point : points) {
             Points.PointId pointId = point.getId();
@@ -247,8 +244,7 @@ public class QdrantPointOperations {
                 .setWithVectors(WithVectorsSelectorFactory.enable(withVectors))
                 .build();
 
-        // 동시 호출 수에 상한을 둔다. 넘치면 자리가 날 때까지 기다린다(QdrantBulkhead).
-        return bulkhead.run(() -> await(qdrantClient.searchAsync(request)))
+        return await(qdrantClient.searchAsync(request))
                 .stream()
                 .map(this::toResult)
                 .toList();
@@ -258,7 +254,7 @@ public class QdrantPointOperations {
      * 기준 벡터 여러 개를 한 번의 요청으로 검색한다. 결과는 입력 순서대로, 기준 벡터마다 따로 돌아온다.
      *
      * <p>추천 보드 4개의 제목을 정할 때 쓴다. 보드마다 자기 평균 벡터로 검색되므로 따로 4번 보낸 것과 결과가 같고,
-     * Qdrant 왕복만 4번에서 1번으로 준다. 상한(QdrantBulkhead)도 묶음 전체가 자리 하나를 쓴다.</p>
+     * Qdrant 왕복만 4번에서 1번으로 준다.</p>
      */
     public List<List<ScoredPointResult>> searchBatch(String collectionName, List<float[]> queryVectors, int topK) {
         if (queryVectors.isEmpty()) {
@@ -274,7 +270,7 @@ public class QdrantPointOperations {
                         .build())
                 .toList();
 
-        return bulkhead.run(() -> await(qdrantClient.searchBatchAsync(collectionName, requests, null)))
+        return await(qdrantClient.searchBatchAsync(collectionName, requests, null))
                 .stream()
                 .map(batch -> batch.getResultList().stream().map(this::toResult).toList())
                 .toList();
