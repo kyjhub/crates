@@ -67,7 +67,7 @@
 
 ### 준비물
 
-1. **환경변수 파일** — 저장소 루트에 `crates_server.env`를 만든다(git에 올리지 않는다).
+1. **환경변수 파일** — 저장소 루트에 `crates_server.env`를 만든다.
 
    ```
    POSTGRESQL_USERNAME=
