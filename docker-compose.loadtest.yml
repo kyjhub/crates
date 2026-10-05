@@ -24,9 +24,6 @@ services:
     environment:
       # SQL 출력만 끈다. 무엇을 끄고 무엇을 두는지는 application-loadtest.yaml에 있다.
       - SPRING_PROFILES_ACTIVE=loadtest
-      # Qdrant 호출 동시 실행 상한(QdrantBulkhead). 파일을 고치지 않고 바꿔 가며 잰다:
-      #   QDRANT_BULKHEAD=4 docker compose ... up -d backend
-      - AI_VECTORSTORE_QDRANT_BULKHEAD_MAXCONCURRENT=${QDRANT_BULKHEAD:-16}
     deploy:
       resources:
         limits:
