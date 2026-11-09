@@ -137,19 +137,21 @@ variable "ai_server_port" {
 }
 
 # ── 배포 자동화 (GitHub Actions OIDC) ────────────────────────────
+# 배포 역할을 받을 수 있는 저장소. 2026-11-09 팀 조직(VibeCrates)에서 개인 계정 저장소로 옮겼다 —
+# 개인 저장소라야 저장소 단위 fine-grained 토큰으로 워크플로 파일을 push할 수 있다. 팀 저장소는 더 쓰지 않는다.
 variable "github_org" {
   type    = string
-  default = "VibeCrates"
+  default = "kyjhub"
 }
 
 variable "github_backend_repo" {
   type    = string
-  default = "VibeCrates_Server"
+  default = "crates"
 }
 
 variable "github_frontend_repo" {
   type    = string
-  default = "VibeCrates_Frontend"
+  default = "crates_frontend"
 }
 
 # 배포를 허용할 브랜치. 다른 브랜치나 포크의 워크플로는 AWS 역할을 받을 수 없다.

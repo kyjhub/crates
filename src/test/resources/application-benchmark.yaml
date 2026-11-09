@@ -39,3 +39,6 @@ ai:
     qdrant:
       load:
         enabled: false
+      # 검색어 벡터도 같다. 켜 두면 기동할 때 CSV(gitignore 대상이라 CI에는 없다)를 읽어 컬렉션을 맞춘다.
+      query-load:
+        enabled: false

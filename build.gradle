@@ -71,7 +71,12 @@ dependencies {
 }
 
 tasks.named('test') {
-	useJUnitPlatform()
+	useJUnitPlatform {
+		// GitHub Actions는 CI=true를 넣는다. 그곳의 DB는 비어 있어 시딩 데이터가 필요한 벤치마크는 돌릴 수 없다.
+		if (System.getenv('CI') == 'true') {
+			excludeTags 'benchmark'
+		}
+	}
 
 	// RepositoryBenchmarkTest는 결과를 System.out으로 낸다. 이게 없으면 측정값이 삼켜진다.
 	testLogging {
