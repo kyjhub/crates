@@ -172,7 +172,7 @@ aws s3 sync ./images "s3://$(terraform output -raw images_bucket)/"
 REPO=$(terraform output -raw ecr_repository_url)
 TAG=$(git rev-parse --short HEAD)
 aws ecr get-login-password | docker login --username AWS --password-stdin "${REPO%%/*}"
-git clone --depth 1 https://github.com/VibeCrates/VibeCrates_Server.git /tmp/crates-src
+git clone --depth 1 https://github.com/kyjhub/crates.git /tmp/crates-src
 docker buildx build --platform linux/arm64 -t "$REPO:$TAG" --push /tmp/crates-src
 aws ssm put-parameter --name /crates/prod/backend-image-tag --type String --overwrite --value "$TAG"
 ```

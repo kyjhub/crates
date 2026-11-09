@@ -3,7 +3,8 @@
 main에 merge하면 사람이 손대지 않고 운영에 나간다. 배포 중에도 요청이 끊기지 않게(무중단) 한다.
 
 - 작성: 2026-11-09
-- 워크플로: 백엔드 `.github/workflows/backend.yml`, 프론트 `VibeCrates_Frontend/.github/workflows/frontend.yml`
+- 저장소: 백엔드 `kyjhub/crates`, 프론트 `kyjhub/crates_frontend`(2026-11-09 팀 조직 VibeCrates에서 옮김. 팀 저장소는 더 쓰지 않는다)
+- 워크플로: 백엔드 `.github/workflows/backend.yml`, 프론트 `kyjhub/crates_frontend`의 `.github/workflows/frontend.yml`
 - AWS 쪽(역할·롤링 설정): `infra/terraform/prod/github_oidc.tf`, `ecs.tf`, `alb.tf`
 
 ---
@@ -72,10 +73,10 @@ OAuth 로그인 중의 요청 정보(state 등)도 서버 세션이 아니라 �
 
 | 저장소 | 변수 | output |
 | --- | --- | --- |
-| VibeCrates_Server | `AWS_BACKEND_DEPLOY_ROLE_ARN` | `github_backend_deploy_role_arn` |
-| VibeCrates_Frontend | `AWS_FRONTEND_DEPLOY_ROLE_ARN` | `github_frontend_deploy_role_arn` |
-| VibeCrates_Frontend | `FRONTEND_BUCKET` | `frontend_bucket` |
-| VibeCrates_Frontend | `CLOUDFRONT_DISTRIBUTION_ID` | `cloudfront_distribution_id` |
+| kyjhub/crates | `AWS_BACKEND_DEPLOY_ROLE_ARN` | `github_backend_deploy_role_arn` |
+| kyjhub/crates_frontend | `AWS_FRONTEND_DEPLOY_ROLE_ARN` | `github_frontend_deploy_role_arn` |
+| kyjhub/crates_frontend | `FRONTEND_BUCKET` | `frontend_bucket` |
+| kyjhub/crates_frontend | `CLOUDFRONT_DISTRIBUTION_ID` | `cloudfront_distribution_id` |
 
 ### main 보호 규칙 (Settings → Rules → Rulesets, 두 저장소 모두)
 
