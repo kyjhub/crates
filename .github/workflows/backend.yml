@@ -1,0 +1,200 @@
+# backend 테스트 → 이미지 → ECS 무중단 배포
+#
+#   PR            테스트만
+#   main에 push   테스트 → ARM64 이미지(커밋 SHA 7자리 태그)를 ECR에 → 작업 정의의 이미지만 바꾼 새 리비전으로 서비스 갱신
+#                 → 안정될 때까지 기다림 → 배포한 태그를 SSM(backend-image-tag)에 기록
+#
+# 무중단은 ECS 롤링 배포가 맡는다(infra/terraform/prod/ecs.tf): 새 작업이 ALB 헬스 체크(readiness)를 통과한 뒤
+# 옛 작업을 내리고, 실패하면 회로 차단기가 이전 리비전으로 되돌린다. 이 워크플로는 되돌려졌으면 실패로 끝낸다.
+#
+# AWS 키는 저장하지 않는다. OIDC로 배포 역할(github_oidc.tf)을 받는데, 그 역할은 이 저장소의 main 브랜치만 믿는다.
+# 그래서 PR(포크 포함)에서 도는 작업은 AWS에 닿지 못한다.
+# 저장소 변수(Settings → Secrets and variables → Actions → Variables): AWS_BACKEND_DEPLOY_ROLE_ARN
+#   = terraform output -raw github_backend_deploy_role_arn
+name: backend
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "load-test/**"
+      - "infra/**" # Terraform은 사람이 plan을 보고 적용한다
+      - "**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: crates-backend
+  ECS_CLUSTER: crates-prod
+  ECS_SERVICE: backend
+  TASK_FAMILY: crates-prod-backend
+  IMAGE_TAG_PARAMETER: /crates/prod/backend-image-tag
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: crates
+          POSTGRES_PASSWORD: crates
+          POSTGRES_DB: crates
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U crates" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # 컨텍스트 테스트(CratesApplicationTests)가 자리표시자를 채우는 데만 쓰는 가짜 값. 실제 비밀이 아니다.
+      POSTGRESQL_USERNAME: crates
+      POSTGRESQL_PASSWORD: crates
+      STORAGE_ACCESS_KEY: ci
+      STORAGE_SECRET_KEY: ci
+      GOOGLE_CLIENT_ID: ci
+      GOOGLE_CLIENT_SECRET: ci
+      KAKAO_CLIENT_ID: ci
+      KAKAO_CLIENT_SECRET: ci
+      NAVER_CLIENT_ID: ci
+      NAVER_CLIENT_SECRET: ci
+      JWT_SECRET_KEY: Y2ktb25seS1qd3Qtc2VjcmV0LWtleS1mb3ItY29udGV4dC10ZXN0cy0wMTIzNDU2Nzg5
+      SEARCH_LIKE_TOKEN_SECRET: ci-only-search-like-token-secret-0123456789
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      # CI=true라 시딩 DB가 필요한 벤치마크(@Tag("benchmark"))는 빠진다(build.gradle).
+      - run: ./gradlew test --no-daemon
+
+  image:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-24.04-arm # ECS가 ARM64(Graviton)라 에뮬레이션 없이 같은 아키텍처에서 빌드한다
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: tag
+        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BACKEND_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+      # ECR 태그는 덮어쓸 수 없다(IMMUTABLE). 같은 커밋을 다시 배포할 때는 이미 있는 이미지를 쓴다.
+      - id: exists
+        run: |
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids "imageTag=${{ steps.tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.exists.outputs.found == 'false'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: steps.exists.outputs.found == 'false'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+          # 증명(attestation) 매니페스트를 붙이지 않는다. 붙이면 태그 없는 항목이 ECR 보관 개수(20)를 차지한다.
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # 배포가 겹치지 않게 한 번에 하나씩. 진행 중인 배포를 취소하지 않는다(ECS가 중간 상태로 남는다).
+    concurrency:
+      group: deploy-backend
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ needs.image.outputs.tag }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BACKEND_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 마지막 리비전에서 이미지만 바꾼다. 환경 변수·비밀·CPU·메모리는 Terraform이 정한 값 그대로다.
+      - name: Register task definition
+        id: taskdef
+        run: |
+          aws ecs describe-task-definition --task-definition "$TASK_FAMILY" --query taskDefinition > current.json
+          IMAGE="$(jq -r '.containerDefinitions[] | select(.name == "backend") | .image' current.json)"
+          NEW_IMAGE="${IMAGE%:*}:$TAG"
+          jq --arg image "$NEW_IMAGE" '
+            .containerDefinitions |= map(if .name == "backend" then .image = $image else . end)
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities,
+                  .registeredAt, .registeredBy, .deregisteredAt)' current.json > next.json
+          ARN="$(aws ecs register-task-definition --cli-input-json file://next.json --query taskDefinition.taskDefinitionArn --output text)"
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+          echo "새 리비전: $ARN ($IMAGE → $NEW_IMAGE)"
+
+      # 환경을 꺼 둔 동안(active = false)은 서비스가 없다. 태그만 기록해 두면 다음에 켤 때 이 이미지로 뜬다.
+      - name: Check service
+        id: service
+        run: |
+          STATUS="$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].status' --output text 2>/dev/null || true)"
+          if [ "$STATUS" = "ACTIVE" ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ECS 서비스가 없다(환경 꺼짐). 태그만 기록하고, 다음에 환경을 켤 때 이 이미지로 뜬다."
+          fi
+
+      - name: Update service
+        if: steps.service.outputs.active == 'true'
+        run: |
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --task-definition "${{ steps.taskdef.outputs.arn }}" --query 'service.deployments[0].id' --output text
+
+      # 새 작업이 healthy가 되고 옛 작업이 빠질 때까지. 회로 차단기가 되돌리면 rolloutState가 FAILED가 된다.
+      - name: Wait for rollout
+        if: steps.service.outputs.active == 'true'
+        run: |
+          ARN="${{ steps.taskdef.outputs.arn }}"
+          for _ in $(seq 1 100); do
+            read -r STATE TASKDEF COUNT <<<"$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query 'services[0].[deployments[?status==`PRIMARY`]|[0].rolloutState, deployments[?status==`PRIMARY`]|[0].taskDefinition, length(deployments)]' \
+              --output text)"
+            echo "$(date +%H:%M:%S) $STATE deployments=$COUNT"
+            if [ "$TASKDEF" != "$ARN" ]; then
+              echo "::error::배포가 이전 리비전으로 되돌려졌다($TASKDEF). ECS 서비스 이벤트와 /ecs/crates-prod-backend 로그를 본다."
+              exit 1
+            fi
+            if [ "$STATE" = "COMPLETED" ] && [ "$COUNT" = "1" ]; then exit 0; fi
+            if [ "$STATE" = "FAILED" ]; then
+              echo "::error::배포 실패(회로 차단기). ECS 서비스 이벤트와 /ecs/crates-prod-backend 로그를 본다."
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "::error::25분 안에 배포가 끝나지 않았다"
+          exit 1
+
+      # 성공한 태그만 남긴다. Terraform이 작업 정의를 다시 만들 때(환경을 껐다 켤 때) 이 값을 읽는다.
+      - name: Record image tag
+        run: |
+          aws ssm put-parameter --name "$IMAGE_TAG_PARAMETER" --value "$TAG" --overwrite >/dev/null
+          echo "배포한 태그: $TAG"

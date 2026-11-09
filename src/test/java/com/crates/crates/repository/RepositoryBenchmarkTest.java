@@ -15,6 +15,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
@@ -70,6 +71,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 만들고 {@code ANALYZE}까지 돌린다. 통계를 갱신하지 않으면 플래너가 빈 테이블을 가정해
  * 엉뚱한 계획을 고른다. 이 행들도 롤백과 함께 사라진다.</p>
  */
+@Tag("benchmark")               // 시딩한 개발 DB가 있어야 한다. CI(빈 DB)에서는 build.gradle이 뺀다.
 @DataJpaTest(showSql = false)   // 로그 포매팅 비용이 측정 구간에 섞이지 않도록
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @ActiveProfiles("benchmark")    // ddl-auto=none 을 고정한다. 빼면 개발 DB가 drop/create 된다.

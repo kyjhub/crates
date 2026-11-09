@@ -217,8 +217,11 @@ terraform validate
 terraform test     # AWS에 붙지 않는다(mock). 도메인 유무 × 켜기/끄기에서 리소스가 의도대로 생기고 사라지는지
 ```
 
+## 배포
+
+main에 merge하면 GitHub Actions가 배포한다(무중단 롤링). 저장소 변수 설정과 마이그레이션 규칙은 `docs/deployment.md`.
+
 ## 아직 하지 않은 것
 
-- GitHub Actions 워크플로(backend 이미지 빌드·배포, 프론트 배포). 역할은 `github_oidc.tf`에 있다.
 - backend 전용 DB 계정. 지금은 RDS 마스터 계정(Secrets Manager)을 쓴다. 최소 권한으로 나누려면 앱 계정을 만들어 비밀번호를 SSM에 넣는다.
 - WAF, RDS Multi-AZ, ElastiCache 복제본 — 비용 때문에 뺐다.
