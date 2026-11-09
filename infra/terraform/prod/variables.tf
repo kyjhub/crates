@@ -154,6 +154,22 @@ variable "github_frontend_repo" {
   default = "crates_frontend"
 }
 
+# OIDC sub에 들어가는 바뀌지 않는 번호(GitHub API의 owner.id, id). 이름을 바꿔도 그대로다.
+variable "github_owner_id" {
+  type    = string
+  default = "86425607"
+}
+
+variable "github_backend_repo_id" {
+  type    = string
+  default = "1370267140"
+}
+
+variable "github_frontend_repo_id" {
+  type    = string
+  default = "1451211190"
+}
+
 # 배포를 허용할 브랜치. 다른 브랜치나 포크의 워크플로는 AWS 역할을 받을 수 없다.
 variable "github_deploy_branch" {
   type    = string
