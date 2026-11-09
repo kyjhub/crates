@@ -11,8 +11,8 @@ resource "aws_iam_openid_connect_provider" "github" {
 
 data "aws_iam_policy_document" "github_assume" {
   for_each = {
-    backend  = var.github_backend_repo
-    frontend = var.github_frontend_repo
+    backend  = { name = var.github_backend_repo, id = var.github_backend_repo_id }
+    frontend = { name = var.github_frontend_repo, id = var.github_frontend_repo_id }
   }
 
   statement {
@@ -29,10 +29,16 @@ data "aws_iam_policy_document" "github_assume" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # GitHub은 소유자·저장소의 바뀌지 않는 번호를 넣은 sub를 보낸다(2026-11-09 kyjhub 저장소에서 확인:
+    # repo:kyjhub@86425607/crates@1370267140:ref:refs/heads/main). 이름만 보는 옛 형식도 함께 받는다.
+    # 번호가 들어간 형식은 저장소를 지우고 같은 이름으로 다시 만들어도 번호가 달라 통과하지 못한다.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_org}/${each.value}:ref:refs/heads/${var.github_deploy_branch}"]
+      values = [
+        "repo:${var.github_org}@${var.github_owner_id}/${each.value.name}@${each.value.id}:ref:refs/heads/${var.github_deploy_branch}",
+        "repo:${var.github_org}/${each.value.name}:ref:refs/heads/${var.github_deploy_branch}",
+      ]
     }
   }
 }
