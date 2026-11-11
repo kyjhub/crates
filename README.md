@@ -102,31 +102,12 @@ docker compose --env-file crates_server.env up -d --build
 | Redis | 6379 |
 | MinIO | 9000(S3 API), 9001(콘솔) |
 
-## API
+## 주요 기능
 
-| 메서드 | 경로 | 설명 |
-|---|---|---|
-| GET | `/oauth2/authorization/{google\|kakao\|naver}` | 소셜 로그인 시작(로그인 중 요청 정보는 암호화한 쿠키에 둔다) |
-| POST | `/api/auth/oauth-token` | 소셜 로그인 후 임시 토큰을 JWT로 교환 |
-| POST | `/api/auth/profile` | 가입 직후 프로필 입력 |
-| POST | `/api/auth/refresh`, `/api/auth/logout` | 토큰 갱신, 로그아웃 |
-| GET | `/api/users/me/onboarding` | 취향 콘텐츠를 골랐는지 |
-| GET | `/api/contents/onboarding?type=` | 가입 직후 고를 취향 콘텐츠 후보(종류별) |
-| POST | `/api/users/me/initial-contents` | 고른 콘텐츠로 첫 취향 벡터 만들기 |
-| GET | `/api/boards/recommendation/user` | 홈 추천 보드 4개 |
-| GET | `/api/boards/liked?n=` | 인기 보드 |
-| GET | `/api/boards/mine?filter=&page=&size=` | 보관함(ALL / LIKED / CREATED) |
-| GET | `/api/boards/list?boardId=` | 보드 상세 |
-| GET | `/api/search/board?keyword=` | 검색 보드 |
-| POST | `/api/boards/likes` | 홈 추천 보드 좋아요(토큰으로 저장 + 좋아요) |
-| POST | `/api/search/board/likes` | 검색 보드 좋아요(토큰으로 저장 + 좋아요) |
-| POST·DELETE | `/api/boards/{boardId}/likes` | 저장된 보드 좋아요·취소 |
-| POST | `/api/boards` | 보드를 고쳐 내 보드로 새로 저장 |
-| PUT | `/api/boards/{boardId}` | 보드 수정(남의 보드면 복제본) |
-| DELETE | `/api/boards/{boardId}` | 내 보드 삭제 |
-| POST | `/api/logs/board-capture` | 보드 사진 저장 기록(행동 로그) |
-| GET | `/api/contents/search?keyword=` | 콘텐츠 제목 검색(3글자 이상) |
-| GET | `/api/contents/{contentId}`, `/api/contents/{dtype}/{contentId}` | 콘텐츠 요약, 상세 |
+- **소셜 로그인과 취향 설정** — Google, Kakao, Naver로 로그인하고 관심 콘텐츠를 선택합니다.
+- **맞춤 보드 추천** — 선택한 콘텐츠와 좋아요를 바탕으로 홈에서 취향에 맞는 보드를 추천받습니다.
+- **보드·콘텐츠 검색** — 키워드로 보드와 콘텐츠를 찾고 상세 정보를 확인합니다.
+- **보드 편집과 보관함** — 콘텐츠와 배치를 편집해 내 보드로 저장하고, 만든 보드와 좋아요한 보드를 모아 봅니다.
 
 ## 디렉터리
 
