@@ -126,3 +126,7 @@ infra/terraform/                  AWS 인프라(prod), 켜기·끄기·백업·�
 .github/workflows/                CI/CD(테스트, 이미지, ECS 배포)
 docs/                             보드 스키마 설계, 배포, DB 백업
 ```
+
+## 라이선스
+
+이 저장소의 코드에 적용되는 저작권 고지는 [LICENSE](LICENSE)를 참조하세요.
