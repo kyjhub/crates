@@ -14,3 +14,6 @@ backend.hcl
 env.auto.tfvars
 
 # .terraform.lock.hcl은 커밋한다. 공급자 버전을 모두가 같게 맞춘다.
+
+# Lambda 배포용으로 Terraform이 만드는 zip(rotation_redeploy.tf)
+.build/

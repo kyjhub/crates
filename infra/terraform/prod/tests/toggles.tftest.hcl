@@ -140,6 +140,10 @@ run "domain_active" {
     error_message = "도메인이 있고 켜져 있으면 CloudFront·ALB·ECS 서비스가 있어야 한다"
   }
   assert {
+    condition     = length(aws_cloudwatch_metric_alarm.backend_down) == 1 && length(aws_cloudwatch_metric_alarm.backend_5xx) == 1 && length(aws_cloudwatch_metric_alarm.alb_5xx) == 1 && length(aws_cloudwatch_metric_alarm.db_connection_errors) == 1 && length(aws_cloudwatch_event_rule.db_secret_rotated) == 1 && length(aws_lambda_function.redeploy_backend) == 1
+    error_message = "서비스가 켜져 있으면 backend 다운·5xx·DB 연결 경보와 비밀번호 교체 재배포가 있어야 한다"
+  }
+  assert {
     condition     = length(aws_route53_record.origin) == 1 && length(aws_route53_record.site) == 2
     error_message = "origin 레코드와 사이트 A·AAAA 레코드가 있어야 한다"
   }
@@ -192,6 +196,10 @@ run "domain_inactive" {
   assert {
     condition     = length(aws_lb.main) == 0 && length(aws_ecs_service.backend) == 0 && length(aws_route53_record.origin) == 0
     error_message = "끄면 ALB·ECS 서비스·origin 레코드가 없어야 한다"
+  }
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.backend_down) == 0 && length(aws_cloudwatch_metric_alarm.backend_5xx) == 0 && length(aws_cloudwatch_metric_alarm.alb_5xx) == 0 && length(aws_cloudwatch_metric_alarm.db_connection_errors) == 0 && length(aws_cloudwatch_event_rule.db_secret_rotated) == 0 && length(aws_lambda_function.redeploy_backend) == 0
+    error_message = "끄면 ALB와 함께 서비스 경보·재배포도 없어야 한다"
   }
 }
 

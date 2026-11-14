@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.7"
+    }
   }
 
   # 상태는 bootstrap이 만든 S3 버킷에 둔다. 버킷 이름은 계정마다 달라 코드에 박지 않고
