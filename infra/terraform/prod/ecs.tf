@@ -74,7 +74,7 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
   })
 }
 
-# 작업 역할: 애플리케이션이 AWS를 부를 때 쓴다. 이미지 버킷 읽기·쓰기만 준다.
+# 작업 역할: 애플리케이션이 AWS를 부를 때 쓴다. 이미지 버킷 읽기·쓰기와 DB 비밀 읽기만 준다.
 resource "aws_iam_role" "ecs_task" {
   name               = "${local.name}-backend-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
@@ -127,6 +127,21 @@ resource "aws_iam_role_policy" "ecs_task_images" {
   })
 }
 
+# DB 접속 정보: Secrets Manager JDBC 드라이버가 실행 중에 RDS 비밀을 읽는다(DescribeSecret으로 새 버전을 확인하고
+# GetSecretValue로 받는다). RDS가 관리하는 비밀 하나만 연다.
+resource "aws_iam_role_policy" "ecs_task_db_secret" {
+  name = "read-db-secret"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+      Resource = aws_db_instance.main.master_user_secret[0].secret_arn
+    }]
+  })
+}
+
 # ── 작업 정의 ────────────────────────────────────────────────────
 resource "aws_ecs_task_definition" "backend" {
   family                   = "${local.name}-backend"
@@ -154,7 +169,13 @@ resource "aws_ecs_task_definition" "backend" {
     environment = [
       { name = "SPRING_PROFILES_ACTIVE", value = "prod" },
       { name = "SITE_URL", value = local.site_url },
-      { name = "DB_URL", value = "jdbc:postgresql://${aws_db_instance.main.address}:${aws_db_instance.main.port}/${aws_db_instance.main.db_name}?sslmode=require" },
+      # DB 비밀번호는 주입하지 않는다. Secrets Manager JDBC 드라이버가 접속할 때 RDS 비밀을 직접 읽고,
+      # 인증이 실패하면 새로 읽어 다시 접속한다(application-prod.yaml). 시작 때 주입하던 방식은 RDS가 7일마다
+      # 비밀번호를 바꾸면 재배포 전까지 새 연결이 모두 실패했다(2026-11-13·11-20).
+      { name = "DB_URL", value = "jdbc-secretsmanager:postgresql://${aws_db_instance.main.address}:${aws_db_instance.main.port}/${aws_db_instance.main.db_name}?sslmode=require" },
+      { name = "DB_DRIVER", value = "com.amazonaws.secretsmanager.sql.AWSSecretsManagerPostgreSQLDriver" },
+      { name = "DB_USERNAME", value = aws_db_instance.main.master_user_secret[0].secret_arn }, # 드라이버는 사용자 칸에 비밀 ARN을 받는다
+      { name = "AWS_SECRET_JDBC_REGION", value = var.region },
       { name = "POSTGRESQL_USERNAME", value = aws_db_instance.main.username },
       { name = "REDIS_HOST", value = var.active ? aws_elasticache_replication_group.main[0].primary_endpoint_address : "" },
       { name = "QDRANT_HOST", value = aws_instance.qdrant.private_ip },
@@ -163,17 +184,10 @@ resource "aws_ecs_task_definition" "backend" {
       { name = "AI_SERVER_BASE_URL", value = var.ai_server_base_url },
     ]
 
-    secrets = concat(
-      [for env_name, param in local.backend_ssm_secrets : {
-        name      = env_name
-        valueFrom = "${local.ssm_param_arn_prefix}${param}"
-      }],
-      [{
-        # RDS가 관리하는 비밀은 JSON({"username","password"})이다. password 키만 꺼낸다.
-        name      = "POSTGRESQL_PASSWORD"
-        valueFrom = "${aws_db_instance.main.master_user_secret[0].secret_arn}:password::"
-      }]
-    )
+    secrets = [for env_name, param in local.backend_ssm_secrets : {
+      name      = env_name
+      valueFrom = "${local.ssm_param_arn_prefix}${param}"
+    }]
 
     logConfiguration = {
       logDriver = "awslogs"
