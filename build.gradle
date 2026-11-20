@@ -61,6 +61,13 @@ dependencies {
 	// 이미지 저장소. 로컬 MinIO와 운영 S3를 같은 S3Client로 부른다(S3Config).
 	implementation 'software.amazon.awssdk:s3:2.25.11' // SDK v2
 
+	// 운영 DB 비밀번호를 Secrets Manager에서 직접 읽는 JDBC 드라이버(application-prod.yaml).
+	// RDS가 7일마다 비밀번호를 바꿔도, 인증이 실패하면 새 비밀번호를 다시 읽어 재접속하므로 재배포가 필요 없다.
+	// 2026-11-13·11-20에 시작 때 주입받은 옛 비밀번호로 접속하다 로그인이 막혔다.
+	implementation 'com.amazonaws.secretsmanager:aws-secretsmanager-jdbc:2.0.2'
+	// 드라이버가 끌어오는 secretsmanager 클라이언트(2.20.x)를 위 S3와 같은 SDK 버전에 맞춘다.
+	implementation 'software.amazon.awssdk:secretsmanager:2.25.11'
+
 	// JWT
 	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
 	runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
