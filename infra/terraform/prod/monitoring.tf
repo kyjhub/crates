@@ -91,7 +91,7 @@ resource "aws_cloudwatch_metric_alarm" "db_connection_errors" {
   count = local.serving ? 1 : 0
 
   alarm_name          = "${local.name}-db-connection-errors"
-  alarm_description   = "backend가 DB에 연결하지 못합니다(인증 실패 또는 커넥션 대기 시간 초과). 비밀번호 교체 직후라면 ECS backend 서비스를 새로 배포하세요. 로그: /ecs/${local.name}-backend"
+  alarm_description   = "backend가 DB에 연결하지 못합니다(인증 실패 또는 커넥션 대기 시간 초과). DB 비밀번호는 Secrets Manager JDBC 드라이버가 다시 읽으므로, 계속되면 작업 역할의 비밀 읽기 권한과 RDS 상태를 확인하고 필요하면 backend를 새로 배포하세요. 로그: /ecs/${local.name}-backend"
   namespace           = "Crates/Backend"
   metric_name         = "DbConnectionErrors"
   statistic           = "Sum"
