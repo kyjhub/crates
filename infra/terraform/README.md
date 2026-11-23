@@ -6,7 +6,7 @@ AWS 운영 환경을 코드로 관리한다. 설계와 결정 이유는 노션 �
 infra/terraform/
   bootstrap/   Terraform 상태를 보관할 S3 버킷(계정마다 한 번)
   prod/        운영 환경
-    network.tf          VPC, 서브넷 3계층(public / app / data) × AZ 2, NAT(AZ마다), S3 엔드포인트
+    network.tf          VPC, 서브넷 3계층(public / app / data) × AZ 2, NAT(첫 AZ에 하나, 비용 때문), S3 엔드포인트
     security_groups.tf  CloudFront → ALB → backend → RDS·Redis·Qdrant·중계
     data_stores.tf      RDS PostgreSQL 15, ElastiCache Redis 7.1
     instances.tf        Qdrant EC2(+ 데이터용 EBS), Tailscale 중계 EC2

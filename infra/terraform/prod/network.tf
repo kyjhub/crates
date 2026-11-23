@@ -6,9 +6,10 @@
 #   data    RDS, ElastiCache               인터넷으로 가는 경로가 없다. 요청을 받기만 하므로 나갈 일이 없고,
 #                                          털려도 바깥으로 빼낼 길이 없게 한다
 #
-# NAT 게이트웨이는 가용 영역마다 하나다. 하나만 두면 그 AZ 장애가 다른 AZ의 나가는 통신까지 막고,
-# AZ를 넘는 트래픽 요금도 붙는다. 환경을 끄면(active = false) NAT만 지우고 EIP는 남겨, 다시 켜도
-# 나가는 IP가 같다(상대가 IP 허용 목록을 쓰는 경우를 대비).
+# NAT 게이트웨이는 비용 때문에 첫 AZ(public[0])에 하나만 둔다(2026-11-23, AZ마다 두던 것을 줄임).
+# 그 AZ에 장애가 나면 다른 AZ의 나가는 통신도 막히고, 다른 AZ에서 넘어오는 트래픽 요금이 붙는다.
+# backend 작업이 1개이고 Qdrant도 첫 AZ에만 있어 그 AZ 장애면 어차피 서비스가 멈추므로 받아들인다.
+# 환경을 끄면(active = false) NAT만 지우고 EIP는 남겨, 다시 켜도 나가는 IP가 같다(상대가 IP 허용 목록을 쓰는 경우를 대비).
 
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -71,12 +72,13 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# ── NAT (AZ마다) ─────────────────────────────────────────────────
+# ── NAT (첫 AZ에 하나) ───────────────────────────────────────────
+# count는 주소를 aws_eip.nat[0] · aws_nat_gateway.main[0]으로 유지하려고 남겨 둔다.
 resource "aws_eip" "nat" {
-  count  = length(var.azs)
+  count  = 1
   domain = "vpc"
 
-  tags = { Name = "${local.name}-nat-${var.azs[count.index]}" }
+  tags = { Name = "${local.name}-nat-${var.azs[0]}" }
 
   # 나가는 IP를 고정해 두려는 것이라, 실수로 지워져 새 IP를 받지 않게 막는다.
   lifecycle {
@@ -85,17 +87,17 @@ resource "aws_eip" "nat" {
 }
 
 resource "aws_nat_gateway" "main" {
-  count = var.active ? length(var.azs) : 0
+  count = var.active ? 1 : 0
 
-  allocation_id = aws_eip.nat[count.index].id
-  subnet_id     = aws_subnet.public[count.index].id
+  allocation_id = aws_eip.nat[0].id
+  subnet_id     = aws_subnet.public[0].id
 
-  tags = { Name = "${local.name}-${var.azs[count.index]}" }
+  tags = { Name = "${local.name}-${var.azs[0]}" }
 
   depends_on = [aws_internet_gateway.main]
 }
 
-# ── app: AZ마다 라우팅 테이블 (같은 AZ의 NAT로 나간다) ──────────────
+# ── app: AZ마다 라우팅 테이블 (둘 다 첫 AZ의 NAT로 나간다) ───────────
 resource "aws_route_table" "app" {
   count  = length(var.azs)
   vpc_id = aws_vpc.main.id
@@ -107,7 +109,7 @@ resource "aws_route" "app_nat" {
 
   route_table_id         = aws_route_table.app[count.index].id
   destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.main[count.index].id
+  nat_gateway_id         = aws_nat_gateway.main[0].id
 }
 
 # AI 서버(Tailscale 망)로 가는 길은 VPC 안의 중계 EC2로 보낸다(tailscale.tf).

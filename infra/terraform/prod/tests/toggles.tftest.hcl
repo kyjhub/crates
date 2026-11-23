@@ -69,8 +69,8 @@ run "no_domain_active" {
     error_message = "켜면 매일 DB 덤프 스케줄과 실패·누락 경보가 있어야 한다"
   }
   assert {
-    condition     = length(aws_nat_gateway.main) == 2 && length(aws_route.app_nat) == 2
-    error_message = "켜면 AZ마다 NAT와 기본 경로가 있어야 한다"
+    condition     = length(aws_nat_gateway.main) == 1 && length(aws_route.app_nat) == 2
+    error_message = "켜면 NAT 하나와 AZ마다 그 NAT로 가는 기본 경로가 있어야 한다"
   }
   assert {
     condition     = length(aws_elasticache_replication_group.main) == 1
@@ -110,7 +110,7 @@ run "no_domain_inactive" {
     error_message = "끄면 NAT와 기본 경로가 없어야 한다"
   }
   assert {
-    condition     = length(aws_eip.nat) == 2
+    condition     = length(aws_eip.nat) == 1
     error_message = "끄도 EIP는 남아야 한다(나가는 IP 고정)"
   }
   assert {

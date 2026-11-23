@@ -54,13 +54,16 @@ variable "azs" {
 
 # ── 사양 (로컬 측정에서 잡은 시작값. 클라우드 부하 테스트로 조정한다) ──
 variable "backend_cpu" {
-  type    = number
-  default = 2048 # 2 vCPU
+  type = number
+  # 2026-11-23 2 vCPU / 4GB에서 줄였다(비용). 11-08 AWS 측정에서 화면 40/s에도 CPU 평균 43%였다.
+  # 1 vCPU에서는 따로 재지 않았다 — 처리 상한이 대략 절반(화면 20/s 안팎)이 될 것으로 본다.
+  default = 1024 # 1 vCPU
 }
 
 variable "backend_memory" {
-  type    = number
-  default = 4096 # MiB
+  type = number
+  # 2GB가 아니라 3GB: MaxRAMPercentage 70이라 힙 약 2.1GB. Qdrant 재적재 때 벡터 CSV(약 560MB)를 올릴 여유
+  default = 3072 # MiB
 }
 
 variable "backend_desired_count" {
